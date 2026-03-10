@@ -1,0 +1,71 @@
+# Multi-Agent Project Advisor Configuration
+# Supported backends: claude, gemini, openai
+
+defaults:
+  backend: gemini
+  model: google/gemini-2.5-flash
+  temperature: 0.7
+
+agents:
+  planner:
+    backend: gemini
+    model: google/gemini-1.5-pro
+    temperature: 0.5  # More deterministic for orchestration
+
+  researcher:
+    backend: gemini
+    model: google/gemini-2.5-flash
+    temperature: 0.7
+
+  architect:
+    backend: gemini
+    model: google/gemini-1.5-pro
+    temperature: 0.7
+
+  backend_dev:
+    backend: claude
+    model: anthropic/claude-sonnet-4-6
+    temperature: 0.8
+
+  frontend_dev:
+    backend: claude
+    model: anthropic/claude-sonnet-4-6
+    temperature: 0.8
+
+  devops:
+    backend: claude
+    model: anthropic/claude-sonnet-4-6
+    temperature: 0.7
+
+  security:
+    backend: claude
+    model: anthropic/claude-sonnet-4-6
+    temperature: 0.6
+
+  skeptic:
+    backend: claude
+    model: anthropic/claude-sonnet-4-6
+    temperature: 0.9  # More creative/challenging
+
+# Backend CLI command templates
+backends:
+  claude:
+    command: "claude"
+    args: ["--print"]
+    input_mode: stdin  # pipe prompt via stdin
+
+  gemini:
+    command: "gemini"
+    args: ["--yolo"]
+    input_mode: stdin
+
+  openai:
+    command: "openai"
+    args: ["api", "chat.completions.create", "-m", "{model}"]
+    input_mode: stdin
+
+debate:
+  max_rounds: 2
+  min_agents: 3
+  max_agents: 5
+  synthesis_format: markdown
