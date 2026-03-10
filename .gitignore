@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated reports
+report_*.md
+
+# Project directories (should be in their own repos)
+polymarket-dashboard/
