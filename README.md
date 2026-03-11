@@ -68,6 +68,31 @@ python main.py "Build an ML pipeline" --config my_config.yaml
 python main.py "Build a blog" --no-save
 ```
 
+## Project Bootstrapping
+
+After the planner has run and a satisfactory plan has been generated, you can bootstrap a new, clean project structure using the provided template.
+
+A project template (`base-project/`) and creation script (`create_project.sh`) are included in this repository.
+
+### Usage
+
+To create a new project structure, run the `create_project.sh` script from within the `multi-agent-system` directory:
+
+```bash
+./create_project.sh <your-new-project-name>
+```
+
+By default, this will create a new project directory inside a `projects/` folder in the workspace root.
+
+### Custom Project Directory (Optional)
+
+You can control the output location by setting the `PROJECTS_DIR` environment variable before running the script.
+
+```bash
+export PROJECTS_DIR=/path/to/your/projects
+./create_project.sh <your-new-project-name>
+```
+
 ## Output
 
 Each run saves a markdown report with:

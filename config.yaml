@@ -50,7 +50,7 @@ agents:
 # Backend CLI command templates
 backends:
   claude:
-    command: "claude"
+    command: "/root/.local/bin/claude"
     args: ["--print"]
     input_mode: stdin  # pipe prompt via stdin
 
