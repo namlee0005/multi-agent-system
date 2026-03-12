@@ -44,19 +44,28 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
         return prompt
 
     def call_llm(self, prompt: str, backend_config: dict) -> str:
-        """Call the configured LLM backend via subprocess."""
+        """Call the configured LLM backend via subprocess and log the interaction."""
+        import datetime
+        import os
+        import subprocess
+
         backend = self.backend
         cfg = backend_config.get(backend, {})
         command = cfg.get("command", "claude")
         args = cfg.get("args", ["--print"])
-        input_mode = cfg.get("input_mode", "stdin")
-
-        # Build args, substituting model placeholder
+        
         resolved_args = [
             a.replace("{model}", self.model) for a in args
         ]
-
         cmd = [command] + resolved_args
+        
+        timestamp = datetime.datetime.now().isoformat()
+        log_file_path = "logs/cli_calls.log"
+        os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
+        
+        log_entry = f"--- TIMESTAMP: {timestamp} ---\n"
+        log_entry += f"Agent: {self.name} (Model: {self.model})\n"
+        log_entry += f"Command: {' '.join(cmd)}\n"
 
         try:
             result = subprocess.run(
@@ -64,21 +73,32 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
                 input=prompt,
                 capture_output=True,
                 text=True,
-                timeout=300,
+                timeout=600,
             )
+            
             if result.returncode != 0:
                 stderr = result.stderr.strip()
+                log_entry += f"Status: ERROR\n"
+                log_entry += f"Stderr: {stderr}\n\n"
+                with open(log_file_path, "a") as f:
+                    f.write(log_entry)
                 raise RuntimeError(
                     f"Backend '{backend}' exited {result.returncode}: {stderr}"
                 )
-            return result.stdout.strip()
-        except FileNotFoundError:
-            raise RuntimeError(
-                f"Backend command '{command}' not found. "
-                f"Install it or change the backend in config.yaml."
-            )
-        except subprocess.TimeoutExpired:
-            raise RuntimeError(f"Agent '{self.name}' timed out after 120s.")
+            
+            stdout = result.stdout.strip()
+            log_entry += f"Status: SUCCESS\n"
+            log_entry += f"Output (first 100 chars): {stdout[:100].strip()}...\n\n"
+            with open(log_file_path, "a") as f:
+                f.write(log_entry)
+            return stdout
+            
+        except Exception as e:
+            log_entry += f"Status: FATAL_ERROR\n"
+            log_entry += f"Error: {str(e)}\n\n"
+            with open(log_file_path, "a") as f:
+                f.write(log_entry)
+            raise e
 
     def respond(self, user_request: str, context: dict, backend_config: dict, project_path: Optional[str] = None) -> str:
         """Generate a response given the current context, potentially writing to a file."""
@@ -127,7 +147,11 @@ When synthesizing, produce a comprehensive markdown document with:
 - Implementation Phases (with milestones)
 - Open Questions
 
-When instructed to write content to a file, use the format: <write_file path="FILENAME">CONTENT</write_file>
+        When given the task "write_spec_file", you must take the final synthesized plan from the context and extract the 'Executive Summary', 'Recommended Tech Stack', and 'Architecture Overview' sections. Format this as a single markdown file and wrap it in a <write_file path="spec.md">...</write_file> tag.
+
+        When given the task "write_tasks_file", you must take the final synthesized plan from the context and extract the 'Implementation Phases' section. Format this as a single markdown file and wrap it in a <write_file path="tasks.md">...</write_file> tag.
+
+        When instructed to write content to a file, use the format: <write_file path="FILENAME">CONTENT</write_file>
 For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),

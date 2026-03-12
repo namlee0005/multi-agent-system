@@ -77,6 +77,7 @@ class Orchestrator:
 
         self.planner = build_planner(config, project_path=project_path)
         self.all_agents = build_agents(config, project_path=project_path)
+        self.all_agents['planner'] = self.planner
 
         # Shared context/memory dict — grows as the debate progresses
         self.context: dict = {}

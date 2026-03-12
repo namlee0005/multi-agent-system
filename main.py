@@ -172,8 +172,8 @@ def main():
         print("\n" + "═" * 60)
         print(f"CONTINUING PROJECT: {project}")
         print("═" * 60)
-        # For now, just run architect to update tasks.md
-        orchestrator.run_agent(agent_name="architect", task_name="update_tasks_md", project_description=project)
+        orchestrator.run_agent(agent_name="planner", task_name="write_spec_file", project_description=project)
+        orchestrator.run_agent(agent_name="planner", task_name="write_tasks_file", project_description=project)
         sys.exit(0)
 
     elif args.mode == "agent":
