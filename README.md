@@ -1,3 +1,4 @@
+
 # Multi-Agent Project Advisor
 
 A debate-driven technical advisory system where specialized AI agents discuss and challenge each other to produce well-reasoned project recommendations.
@@ -32,7 +33,7 @@ Planner synthesizes → Final recommendation (saved as markdown)
 ## Installation
 
 ```bash
-pip install pyyaml
+pip install pyyaml pytest
 ```
 
 You also need at least one LLM backend CLI installed:
@@ -67,6 +68,45 @@ python main.py "Build an ML pipeline" --config my_config.yaml
 # Don't save to file
 python main.py "Build a blog" --no-save
 ```
+
+## Testing
+
+The test suite covers `validator`, `rate_limiter`, and `context_store` with unit and concurrency tests.
+
+### Run all tests
+
+```bash
+pytest tests/
+```
+
+### Run a specific module
+
+```bash
+pytest tests/test_validator.py
+pytest tests/test_rate_limiter.py
+pytest tests/test_context_store.py
+```
+
+### Verbose output
+
+```bash
+pytest tests/ -v
+```
+
+### Run with coverage (requires `pytest-cov`)
+
+```bash
+pip install pytest-cov
+pytest tests/ --cov=. --cov-report=term-missing
+```
+
+### What each suite tests
+
+| File | Module | Focus |
+|------|--------|-------|
+| `tests/test_validator.py` | `validator.py` | Good/bad response detection: empty, too short, malformed JSON, mismatched `<write_file>` tags, truncation patterns |
+| `tests/test_rate_limiter.py` | `rate_limiter.py` | Token bucket drain/refill rate, rpm cap, per-backend isolation, thread safety |
+| `tests/test_context_store.py` | `context_store.py` | Scalar get/set, list append, snapshot isolation, 100-thread concurrent append correctness |
 
 ## Project Bootstrapping
 
@@ -171,6 +211,9 @@ main.py          CLI entry point, argument parsing, report saving
 orchestrator.py  Debate flow: agent selection → rounds → synthesis
 agents.py        Agent class definitions, LLM backend calls
 config.yaml      Model assignments, backend configuration
+validator.py     Response quality checks (length, JSON, write_file tags, truncation)
+rate_limiter.py  Per-backend token bucket rate limiting (thread-safe)
+context_store.py Shared RLock-protected key/value store for debate state
 ```
 
 The `Orchestrator` maintains a shared `context` dict that grows as debate progresses. Each agent receives:

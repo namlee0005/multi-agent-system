@@ -3,14 +3,55 @@
 
 defaults:
   backend: gemini
-  model: gemini-3.1-pro-preview
+  model: gemini-2.5-pro
   temperature: 0.7
+
+agents:
+  planner:
+    backend: gemini
+    model: gemini-2.5-pro
+    temperature: 0.5  # More deterministic for orchestration
+
+  researcher:
+    backend: gemini
+    model: gemini-2.5-flash
+    temperature: 0.7
+
+  architect:
+    backend: claude
+    model: anthropic/claude-opus-4-6
+    temperature: 0.7
+
+  backend_dev:
+    backend: claude
+    model: anthropic/claude-opus-4-6
+    temperature: 0.8
+
+  frontend_dev:
+    backend: claude
+    model: anthropic/claude-opus-4-6
+    temperature: 0.8
+
+  devops:
+    backend: claude
+    model: anthropic/claude-opus-4-6
+    temperature: 0.7
+
+  security:
+    backend: claude
+    model: anthropic/claude-opus-4-6
+    temperature: 0.6
+
+  skeptic:
+    model: gemini-2.5-pro
+    temperature: 0.9  # More creative/challenging
+
 
 # Backend CLI command templates
 backends:
   claude:
-    command: "/root/.local/bin/claude"
-    args: ["--print"]
+    command: "/home/ben/.npm-global/bin/claude"
+    args: ["--print", "--permission-mode", "bypassPermissions"]
     input_mode: stdin  # pipe prompt via stdin
 
   gemini:

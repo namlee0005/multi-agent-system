@@ -5,10 +5,13 @@ Usage:
     python main.py "Build a crypto dashboard with BTC/ETH prices and Polymarket events"
     python main.py "Build a SaaS invoicing app" --output report.md --verbose
     python main.py "Build a real-time chat app" --config my_config.yaml
+    python main.py "Build a chat app" --headless --format json
 """
 
 import argparse
 import datetime
+import io
+import json
 import os
 import sys
 import yaml
@@ -58,7 +61,6 @@ def load_config(path: str) -> dict:
 def default_output_path(project_description: str) -> str:
     """Generate a timestamped output filename from the project description."""
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-    # Slugify the first few words
     slug = "_".join(project_description.lower().split()[:5])
     slug = "".join(c if c.isalnum() or c == "_" else "" for c in slug)
     return f"report_{slug}_{timestamp}.md"
@@ -73,6 +75,7 @@ Examples:
   python main.py "Build a crypto dashboard with BTC/ETH prices and Polymarket events"
   python main.py "Build a real-time multiplayer game" --output game_report.md
   python main.py "Build a B2B SaaS invoicing app" --config custom.yaml --quiet
+  python main.py "Build a chat app" --headless --format json
         """,
     )
     parser.add_argument(
@@ -117,7 +120,51 @@ Examples:
         "--task",
         help="Specific task for the agent in 'agent' mode (e.g., update_tasks_md)",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="Suppress all output except the final result (for CI/automation use)",
+    )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        dest="output_format",
+        help="Final result output format: 'text' (default) or 'json'",
+    )
     return parser.parse_args()
+
+
+class _SuppressedStdout:
+    """Context manager that redirects stdout to /dev/null."""
+    def __enter__(self):
+        self._original = sys.stdout
+        sys.stdout = io.StringIO()
+        return self
+
+    def __exit__(self, *_):
+        sys.stdout = self._original
+
+
+def emit_result(output_format: str, success: bool, output_path: str = None,
+                project: str = None, mode: str = None, message: str = None):
+    """Write the final result to real stdout and exit with appropriate code."""
+    if output_format == "json":
+        payload = {
+            "success": success,
+            "mode": mode,
+            "project": project,
+            "output_path": output_path,
+            "message": message,
+        }
+        print(json.dumps(payload))
+    else:
+        if success:
+            print(message or f"Success: output written to {output_path}")
+        else:
+            print(f"Error: {message}", file=sys.stderr)
+
+    sys.exit(0 if success else 2)
 
 
 def main():
@@ -130,67 +177,106 @@ def main():
         print('Example: python main.py "Build a crypto dashboard" --project-path /path/to/project', file=sys.stderr)
         sys.exit(1)
 
-    # Load config
+    # Load config — errors go to stderr regardless of headless mode
     config = load_config(args.config)
 
-    # Initialize Orchestrator
-    verbose = not args.quiet
+    # In headless mode, suppress stdout for all intermediate output
+    suppressor = _SuppressedStdout() if args.headless else _NoopContext()
+
+    verbose = not args.quiet and not args.headless
     orchestrator = Orchestrator(config, verbose=verbose, project_path=args.project_path)
 
     if args.mode == "planner":
-        print("\n" + "═" * 60)
-        print("RUNNING PLANNER DEBATE")
-        print("═" * 60)
-        try:
-            result = orchestrator.run_planner_debate(project)
-        except KeyboardInterrupt:
-            print("\n\nInterrupted by user.", file=sys.stderr)
-            sys.exit(1)
-        except Exception as e:
-            print(f"\nFatal error during Planner debate: {e}", file=sys.stderr)
-            raise
+        with suppressor:
+            print("\n" + "═" * 60)
+            print("RUNNING PLANNER DEBATE")
+            print("═" * 60)
+            try:
+                result = orchestrator.run_planner_debate(project)
+            except KeyboardInterrupt:
+                print("\n\nInterrupted by user.", file=sys.stderr)
+                sys.exit(1)
+            except Exception as e:
+                print(f"\nFatal error during Planner debate: {e}", file=sys.stderr)
+                if args.headless:
+                    emit_result(args.output_format, success=False, project=project,
+                                mode=args.mode, message=str(e))
+                raise
 
-        # Build and save markdown report
-        output_path = args.output or default_output_path(project)
-        report_md = build_markdown_report(result)
-        with open(output_path, "w") as f:
-            f.write(report_md)
-        print(f"\n✓ Planner Report saved to: {output_path}")
+            output_path = args.output or default_output_path(project)
+            report_md = build_markdown_report(result)
+            with open(output_path, "w") as f:
+                f.write(report_md)
 
-        # Signal for human approval
-        print("\n" + "═" * 60)
-        print("PLANNER DEBATE COMPLETED - AWAITING HUMAN APPROVAL")
-        print("═" * 60)
-        print(f"Review the report at {output_path} and then run:")
-        print(f"  python main.py --mode continue --project \"{project}\" --project-path {args.project_path} --output {output_path}")
-        sys.exit(0)
+            print(f"\n✓ Planner Report saved to: {output_path}")
+            print("\n" + "═" * 60)
+            print("PLANNER DEBATE COMPLETED - AWAITING HUMAN APPROVAL")
+            print("═" * 60)
+            print(f"Review the report at {output_path} and then run:")
+            print(f"  python main.py --mode continue --project \"{project}\" --project-path {args.project_path} --output {output_path}")
+
+        emit_result(
+            args.output_format, success=True,
+            output_path=output_path, project=project, mode=args.mode,
+            message=f"Planner report saved to {output_path}",
+        )
 
     elif args.mode == "continue":
         if not args.project_path or not args.output:
             print("Error: --project-path and --output are required in 'continue' mode.", file=sys.stderr)
             sys.exit(1)
-        print("\n" + "═" * 60)
-        print(f"CONTINUING PROJECT: {project}")
-        print("═" * 60)
-        orchestrator.run_agent(agent_name="planner", task_name="write_spec_file", project_description=project)
-        orchestrator.run_agent(agent_name="planner", task_name="write_tasks_file", project_description=project)
-        sys.exit(0)
+        with suppressor:
+            print("\n" + "═" * 60)
+            print(f"CONTINUING PROJECT: {project}")
+            print("═" * 60)
+            try:
+                orchestrator.run_agent(agent_name="planner", task_name="write_spec_file", project_description=project)
+                orchestrator.run_agent(agent_name="planner", task_name="write_tasks_file", project_description=project)
+            except Exception as e:
+                print(f"\nFatal error during continue: {e}", file=sys.stderr)
+                if args.headless:
+                    emit_result(args.output_format, success=False, project=project,
+                                mode=args.mode, message=str(e))
+                raise
+
+        emit_result(
+            args.output_format, success=True,
+            output_path=args.output, project=project, mode=args.mode,
+            message="Pipeline continue completed successfully",
+        )
 
     elif args.mode == "agent":
         if not args.agent or not args.task or not args.project_path:
             print("Error: --agent, --task, and --project-path are required in 'agent' mode.", file=sys.stderr)
             sys.exit(1)
-        print("\n" + "═" * 60)
-        print(f"RUNNING SPECIFIC AGENT: {args.agent} for task: {args.task}")
-        print("═" * 60)
-        orchestrator.run_agent(args.agent, args.task, project_description=project)
-        sys.exit(0)
+        with suppressor:
+            print("\n" + "═" * 60)
+            print(f"RUNNING SPECIFIC AGENT: {args.agent} for task: {args.task}")
+            print("═" * 60)
+            try:
+                orchestrator.run_agent(args.agent, args.task, project_description=project)
+            except Exception as e:
+                print(f"\nFatal error running agent: {e}", file=sys.stderr)
+                if args.headless:
+                    emit_result(args.output_format, success=False, project=project,
+                                mode=args.mode, message=str(e))
+                raise
+
+        emit_result(
+            args.output_format, success=True,
+            output_path=args.project_path, project=project, mode=args.mode,
+            message=f"Agent '{args.agent}' task '{args.task}' completed",
+        )
 
     else:
         print("Error: Invalid mode specified.", file=sys.stderr)
         sys.exit(1)
 
-    return {} # Should not reach here in normal flow
+
+class _NoopContext:
+    """No-op context manager for non-headless mode."""
+    def __enter__(self): return self
+    def __exit__(self, *_): pass
 
 
 if __name__ == "__main__":

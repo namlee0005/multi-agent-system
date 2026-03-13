@@ -4,8 +4,26 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Generated reports
+# Logs and sessions
+logs/
+*.json
+
+# Generated reports and research
 report_*.md
+research.md
+research_recommendations.md
+tasks.md
+health_check.py
+random.html
+FILENAME
+foo.py
+some/
 
 # Project directories (should be in their own repos)
 polymarket-dashboard/
+base-project/
+crypto-tracker/
+realtime-chat-app/
+
+# Environment
+.env
