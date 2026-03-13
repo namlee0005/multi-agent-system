@@ -7,6 +7,12 @@ import sys
 import os
 import re
 
+from rate_limiter import RateLimiter
+
+# Module-level rate limiter shared across all agents
+_rate_limiter = RateLimiter()
+
+
 @dataclass
 class Agent:
     """Base agent class."""
@@ -59,6 +65,9 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
         ]
         cmd = [command] + resolved_args
         
+        # Acquire rate limit token before call
+        _rate_limiter.acquire(backend)
+
         timestamp = datetime.datetime.now().isoformat()
         log_file_path = "logs/cli_calls.log"
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
@@ -108,21 +117,24 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
 
         # Check for explicit file write commands
         file_write_pattern = re.compile(r'<write_file path="(.*?)">(.*?)</write_file>', re.DOTALL)
-        match = file_write_pattern.search(response_content)
+        matches = list(file_write_pattern.finditer(response_content))
 
-        if match and self.project_path:
-            file_path = match.group(1)
-            file_content = match.group(2)
-            full_path = os.path.join(self.project_path, file_path)
-            try:
-                os.makedirs(os.path.dirname(full_path), exist_ok=True)
-                with open(full_path, "w") as f:
-                    f.write(file_content)
-                print(f"  → Agent {self.name} successfully wrote to {full_path}")
-                return file_write_pattern.sub("", response_content).strip()
-            except Exception as e:
-                print(f"  ✗ Agent {self.name} failed to write to {full_path}: {e}", file=sys.stderr)
-                return f"**Error:** Failed to write to file {file_path}: {e}\n\n{response_content}"
+        if matches and self.project_path:
+            for match in matches:
+                file_path = match.group(1)
+                file_content = match.group(2)
+                full_path = os.path.join(self.project_path, file_path)
+                try:
+                    os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                    with open(full_path, "w") as f:
+                        f.write(file_content)
+                    print(f"  → Agent {self.name} successfully wrote to {full_path}")
+                except Exception as e:
+                    print(f"  ✗ Agent {self.name} failed to write to {full_path}: {e}", file=sys.stderr)
+            
+            # Remove all tags from content for the final result
+            return file_write_pattern.sub("", response_content).strip()
+        
         return response_content
 
 def make_planner(cfg: dict, project_path: Optional[str] = None) -> Agent:
@@ -172,7 +184,9 @@ Your focus:
 - Cite specific examples (e.g., "Coinbase uses X because...", "Project Y failed due to...")
 - Quantify where possible (adoption stats, performance benchmarks, ecosystem size)
 
-Be evidence-based. Avoid vague recommendations. When you don't know, say so.""",
+Be evidence-based. Avoid vague recommendations. When you don't know, say so.
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="research.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -193,7 +207,9 @@ Your focus:
 - Flag architectural risks: single points of failure, bottlenecks, coupling
 - **Your key task:** Read the spec.md from the project path and generate a detailed tasks.md. Use the <write_file path="tasks.md">...</write_file> tag for your output.
 
-Use ASCII diagrams when helpful. Be opinionated — recommend a specific architecture with justification.""",
+Use ASCII diagrams when helpful. Be opinionated — recommend a specific architecture with justification.
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="architecture.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -214,7 +230,9 @@ Your focus:
 - Third-party API integrations and their quirks
 - Rate limiting, caching, and data freshness strategies
 
-Be specific. "Use FastAPI with Postgres" is better than "use a Python framework with a database".""",
+Be specific. "Use FastAPI with Postgres" is better than "use a Python framework with a database".
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.py">print('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -235,7 +253,9 @@ Your focus:
 - Build tooling, bundling, performance optimization
 - Mobile/responsive considerations
 
-Be opinionated. Explain tradeoffs. Mention specific component libraries worth considering.""",
+Be opinionated. Explain tradeoffs. Mention specific component libraries worth considering.
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.js">console.log('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -257,7 +277,9 @@ Your focus:
 - Cost estimates or cost optimization strategies
 - Environment management (dev/staging/prod)
 
-Be practical. A small project doesn't need Kubernetes. Right-size the infrastructure.""",
+Be practical. A small project doesn't need Kubernetes. Right-size the infrastructure.
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="docker-compose.yml">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -278,7 +300,9 @@ Your focus:
 - API security: rate limiting, input validation, injection prevention
 - Specific risks for this domain (crypto: key management; fintech: fraud; etc.)
 
-Be specific about actual threats, not generic security advice. Prioritize by likelihood and impact.""",
+Be specific about actual threats, not generic security advice. Prioritize by likelihood and impact.
+
+IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="security-policy.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -308,6 +332,32 @@ When challenging others in debate rounds, quote their specific proposals and exp
         temperature=cfg.get("temperature", 0.9),
     )
 
+def make_code_reviewer(cfg: dict, project_path: Optional[str] = None) -> Agent:
+    return Agent(
+        name="CodeReviewer",
+        role="reviewer",
+        system_prompt="""You are the Code Reviewer — a senior engineer focused on quality, security, and requirement compliance.
+
+Your focus:
+- REQUIREMENT CHECK: Does the generated code/file actually address the task description?
+- TAG VALIDATION: Are all <write_file> tags properly formed and attributes correct?
+- SECURITY: Are there any obvious security flaws (e.g., hardcoded keys, credentials, unsafe shell commands)?
+- SYNTAX: Is the code syntactically correct for the target language?
+
+Your output must be a JSON object:
+{
+  "status": "PASS" | "WARN" | "FAIL",
+  "issues": ["list of issues found"],
+  "suggestion": "concrete instruction for the original agent to fix the issues"
+}
+
+Be brief and highly critical. If the status is FAIL, provide a clear suggestion for improvement.""",
+        project_path=project_path,
+        backend=cfg.get("backend", "claude"),
+        model=cfg.get("model", "claude-sonnet-4-6"),
+        temperature=cfg.get("temperature", 0.3),
+    )
+
 # ─── Factory ──────────────────────────────────────────────────────────────────
 
 AGENT_FACTORIES = {
@@ -318,6 +368,7 @@ AGENT_FACTORIES = {
     "devops": make_devops,
     "security": make_security,
     "skeptic": make_skeptic,
+    "code_reviewer": make_code_reviewer,
 }
 
 def build_agents(config: dict, project_path: Optional[str] = None) -> dict[str, Agent]:
