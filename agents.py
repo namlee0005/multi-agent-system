@@ -6,11 +6,15 @@ import subprocess
 import sys
 import os
 import re
+import threading
 
 from rate_limiter import RateLimiter
 
 # Module-level rate limiter shared across all agents
 _rate_limiter = RateLimiter()
+
+# Module-level lock for coordinated cli_calls.log writes across all agent threads
+_log_file_lock = threading.Lock()
 
 
 @dataclass
@@ -89,8 +93,9 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
                 stderr = result.stderr.strip()
                 log_entry += f"Status: ERROR\n"
                 log_entry += f"Stderr: {stderr}\n\n"
-                with open(log_file_path, "a") as f:
-                    f.write(log_entry)
+                with _log_file_lock:
+                    with open(log_file_path, "a") as f:
+                        f.write(log_entry)
                 raise RuntimeError(
                     f"Backend '{backend}' exited {result.returncode}: {stderr}"
                 )
@@ -98,15 +103,17 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
             stdout = result.stdout.strip()
             log_entry += f"Status: SUCCESS\n"
             log_entry += f"Output (first 100 chars): {stdout[:100].strip()}...\n\n"
-            with open(log_file_path, "a") as f:
-                f.write(log_entry)
+            with _log_file_lock:
+                with open(log_file_path, "a") as f:
+                    f.write(log_entry)
             return stdout
             
         except Exception as e:
             log_entry += f"Status: FATAL_ERROR\n"
             log_entry += f"Error: {str(e)}\n\n"
-            with open(log_file_path, "a") as f:
-                f.write(log_entry)
+            with _log_file_lock:
+                with open(log_file_path, "a") as f:
+                    f.write(log_entry)
             raise e
 
     def respond(self, user_request: str, context: dict, backend_config: dict, project_path: Optional[str] = None) -> str:
@@ -120,14 +127,23 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
         matches = list(file_write_pattern.finditer(response_content))
 
         if matches and self.project_path:
+            # Resolve project path to absolute for traversal check
+            abs_project_path = os.path.realpath(self.project_path)
+            
             for match in matches:
                 file_path = match.group(1)
                 file_content = match.group(2)
-                full_path = os.path.join(self.project_path, file_path)
+                
+                # SANITIZATION: Prevent path traversal
+                full_path = os.path.realpath(os.path.join(abs_project_path, file_path))
+                if not full_path.startswith(abs_project_path):
+                    print(f"  ✗ Agent {self.name} attempted path traversal: {file_path}", file=sys.stderr)
+                    continue
+
                 try:
                     os.makedirs(os.path.dirname(full_path), exist_ok=True)
                     with open(full_path, "w") as f:
-                        f.write(file_content)
+                        f.write(file_content.strip())
                     print(f"  → Agent {self.name} successfully wrote to {full_path}")
                 except Exception as e:
                     print(f"  ✗ Agent {self.name} failed to write to {full_path}: {e}", file=sys.stderr)

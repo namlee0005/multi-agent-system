@@ -2,8 +2,8 @@ import json
 import re
 from typing import Any
 
-# Agents expected to return JSON in their primary response
-JSON_EXPECTED_AGENTS = {"planner", "selector", "router", "task_planner"}
+# Agents expected to return JSON in their primary response (selection, routing)
+JSON_EXPECTED_AGENTS = {"selector", "router", "task_planner"}
 
 # Patterns that indicate truncated output
 TRUNCATION_PATTERNS = [

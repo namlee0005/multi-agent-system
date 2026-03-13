@@ -1,6 +1,3 @@
-
-
-
 """Orchestrator: manages the debate flow between agents."""
 
 import datetime
@@ -152,8 +149,8 @@ class Orchestrator:
         Invoke the code_reviewer agent to review a response containing <write_file> tags.
 
         Returns (passed, feedback) where:
-          - passed=True  → reviewer returned PASS (or reviewer unavailable)
-          - passed=False → reviewer returned FAIL with feedback reason
+          - passed=True  → reviewer returned PASS or WARN
+          - passed=False → reviewer returned FAIL, or reviewer errored
         """
         if "code_reviewer" not in self.all_agents:
             with self._log_lock:
@@ -169,10 +166,8 @@ class Orchestrator:
             "## Proposed artifact\n"
             f"{artifact_response}\n\n"
             "Evaluate the artifact for correctness, security issues, and whether it fulfills the task.\n"
-            "Respond with EXACTLY one of:\n"
-            "  PASS\n"
-            "  FAIL: <concise reason(s) the artifact must be revised before writing>\n"
-            "Do not include any other text before or after your verdict line."
+            "Respond with a JSON object exactly as specified in your system prompt:\n"
+            '{"status": "PASS" | "WARN" | "FAIL", "issues": [...], "suggestion": "..."}'
         )
 
         with self._log_lock:
@@ -198,13 +193,30 @@ class Orchestrator:
 
         duration = time.monotonic() - start
 
-        # Parse verdict from first non-empty line
-        verdict_line = next(
-            (ln.strip() for ln in review_response.splitlines() if ln.strip()),
-            "",
-        )
-        passed = review_status == "error" or verdict_line.upper().startswith("PASS")
-        feedback = "" if passed else verdict_line
+        # Parse JSON verdict from reviewer response
+        review_data: dict = {}
+        if review_response:
+            json_match = re.search(r'\{.*\}', review_response, re.DOTALL)
+            if json_match:
+                try:
+                    review_data = json.loads(json_match.group())
+                except json.JSONDecodeError:
+                    pass
+
+        # Reviewer errors are treated as FAIL — never silently allow bad artifacts through
+        if review_status == "error":
+            passed = False
+            feedback = f"Reviewer error: {review_detail}"
+        else:
+            verdict = review_data.get("status", "").upper()
+            passed = verdict in ("PASS", "WARN")
+            if not passed:
+                issues = review_data.get("issues", [])
+                suggestion = review_data.get("suggestion", "")
+                feedback_parts = issues + ([suggestion] if suggestion else [])
+                feedback = "; ".join(feedback_parts) if feedback_parts else review_response[:200]
+            else:
+                feedback = ""
 
         # Determine log status label
         if review_status == "error":
@@ -216,14 +228,14 @@ class Orchestrator:
 
         with self._log_lock:
             if review_status == "error":
-                print_status(color(f"  ⚠ Code review errored — artifact allowed through", "yellow"))
+                print_status(color(f"  ✗ Code review errored — artifact BLOCKED", "red"))
             elif passed:
                 print_status(color(f"  ✓ Code review PASSED", "green"))
             else:
                 print_status(color(f"  ✗ Code review FAILED: {feedback}", "red"))
 
         # Record passed artifacts in the context store
-        if passed and review_status != "error":
+        if passed:
             self.context.append("artifacts", {
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                 "content": artifact_response,
@@ -247,7 +259,7 @@ class Orchestrator:
             model=reviewer.model,
             status=gate_status,
             duration_s=duration,
-            detail=review_detail or verdict_line[:120],
+            detail=review_detail or str(review_data)[:120],
         )
 
         return passed, feedback
@@ -485,7 +497,7 @@ class Orchestrator:
                 "round": round_label,
             }
             if is_challenge_round and self.context.get("round1_proposals"):
-                ctx["previous_proposals"] = self.context.get("round1_proposals")
+                ctx["previous_proposals"] = self.context["round1_proposals"]
                 ctx["challenge_target"] = True
             return self._call_agent(key, request, ctx)
 
