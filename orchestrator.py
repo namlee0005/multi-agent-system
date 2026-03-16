@@ -319,8 +319,15 @@ class Orchestrator:
 
         # Inject skills into the agent's system prompt for this call
         skills_injected = bool(self.agent_skills.get(agent.name, "").strip())
+        original_system_prompt = agent.system_prompt
         if skills_injected:
-            agent.system_prompt = self._build_system_prompt(agent.name, agent.system_prompt)
+            agent.system_prompt = self._build_system_prompt(agent.name, original_system_prompt)
+            os.makedirs("logs/prompts", exist_ok=True)
+            prompt_log_path = (
+                f"logs/prompts/{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{agent.name}.txt"
+            )
+            with open(prompt_log_path, "w") as f:
+                f.write(agent.system_prompt)
 
         # Enrich context with a snapshot of prior outputs so agents can reference them
         ctx["context_store"] = self.context.snapshot()
@@ -332,91 +339,95 @@ class Orchestrator:
         retry_count = 0
         current_request = request
 
-        for attempt in range(1, self.MAX_RETRY_ATTEMPTS + 1):
-            try:
-                response = agent.respond(current_request, ctx, self.backend_config, project_path=self.project_path)
-            except RuntimeError as e:
-                status = "error"
-                error_detail = str(e)
-                response = f"**Error:** {e}"
-                with self._log_lock:
-                    print(color(f"  ✗ {e}", "red"))
-                # Record error in the context store
-                self.context.append("errors", {
-                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-                    "agent": agent.name,
-                    "agent_key": key,
-                    "round": ctx.get("round", ""),
-                    "error": error_detail,
-                })
-                break
-
-            validation = validate_response(agent.name, current_request, response)
-            if not validation["valid"]:
-                # Validation failed — log and prepare retry prompt
-                retry_count = attempt
-                validation_errors = validation.get("errors", [])
-                suggestions = validation.get("suggestions", "")
-
-                with self._log_lock:
-                    print_status(
-                        color(
-                            f"  ⚠ {agent.name} validation failed (attempt {attempt}/{self.MAX_RETRY_ATTEMPTS}): "
-                            + "; ".join(validation_errors),
-                            "gray",
-                        )
-                    )
-
-                if attempt < self.MAX_RETRY_ATTEMPTS:
-                    feedback_block = (
-                        "\n\n---\n"
-                        "**Your previous response did not pass validation. Please correct the following issues:**\n"
-                        + "\n".join(f"- {err}" for err in validation_errors)
-                    )
-                    if suggestions:
-                        feedback_block += f"\n\n**Suggestions:** {suggestions}"
-                    current_request = request + feedback_block
-                else:
-                    status = "validation_failed"
-                    error_detail = "; ".join(validation_errors)
+        try:
+            for attempt in range(1, self.MAX_RETRY_ATTEMPTS + 1):
+                try:
+                    response = agent.respond(current_request, ctx, self.backend_config, project_path=self.project_path)
+                except RuntimeError as e:
+                    status = "error"
+                    error_detail = str(e)
+                    response = f"**Error:** {e}"
+                    with self._log_lock:
+                        print(color(f"  ✗ {e}", "red"))
+                    # Record error in the context store
                     self.context.append("errors", {
                         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                         "agent": agent.name,
                         "agent_key": key,
                         "round": ctx.get("round", ""),
-                        "error": f"validation_failed: {error_detail}",
+                        "error": error_detail,
                     })
-                continue
+                    break
 
-            # Validation passed — check for <write_file> artifacts
-            if not self.skip_review and re.search(r"<write_file\b", response, re.IGNORECASE):
-                review_passed, review_feedback = self._review_artifact(response, current_request)
-                if not review_passed:
+                validation = validate_response(agent.name, current_request, response)
+                if not validation["valid"]:
+                    # Validation failed — log and prepare retry prompt
                     retry_count = attempt
+                    validation_errors = validation.get("errors", [])
+                    suggestions = validation.get("suggestions", "")
+
+                    with self._log_lock:
+                        print_status(
+                            color(
+                                f"  ⚠ {agent.name} validation failed (attempt {attempt}/{self.MAX_RETRY_ATTEMPTS}): "
+                                + "; ".join(validation_errors),
+                                "gray",
+                            )
+                        )
+
                     if attempt < self.MAX_RETRY_ATTEMPTS:
                         feedback_block = (
                             "\n\n---\n"
-                            "**Your previous response was rejected by the code reviewer. "
-                            "Please revise the artifact to address the following issues:**\n"
-                            f"- {review_feedback}"
+                            "**Your previous response did not pass validation. Please correct the following issues:**\n"
+                            + "\n".join(f"- {err}" for err in validation_errors)
                         )
+                        if suggestions:
+                            feedback_block += f"\n\n**Suggestions:** {suggestions}"
                         current_request = request + feedback_block
-                        continue
                     else:
-                        # Exhausted retries on review failure
-                        status = "review_failed"
-                        error_detail = review_feedback
+                        status = "validation_failed"
+                        error_detail = "; ".join(validation_errors)
                         self.context.append("errors", {
                             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                             "agent": agent.name,
                             "agent_key": key,
                             "round": ctx.get("round", ""),
-                            "error": f"review_failed: {error_detail}",
+                            "error": f"validation_failed: {error_detail}",
                         })
-                        break
+                    continue
 
-            # Passed both validation and (if applicable) code review
-            break
+                # Validation passed — check for <write_file> artifacts
+                if not self.skip_review and re.search(r"<write_file\b", response, re.IGNORECASE):
+                    review_passed, review_feedback = self._review_artifact(response, current_request)
+                    if not review_passed:
+                        retry_count = attempt
+                        if attempt < self.MAX_RETRY_ATTEMPTS:
+                            feedback_block = (
+                                "\n\n---\n"
+                                "**Your previous response was rejected by the code reviewer. "
+                                "Please revise the artifact to address the following issues:**\n"
+                                f"- {review_feedback}"
+                            )
+                            current_request = request + feedback_block
+                            continue
+                        else:
+                            # Exhausted retries on review failure
+                            status = "review_failed"
+                            error_detail = review_feedback
+                            self.context.append("errors", {
+                                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                                "agent": agent.name,
+                                "agent_key": key,
+                                "round": ctx.get("round", ""),
+                                "error": f"review_failed: {error_detail}",
+                            })
+                            break
+
+                # Passed both validation and (if applicable) code review
+                break
+
+        finally:
+            agent.system_prompt = original_system_prompt
 
         duration = time.monotonic() - start
 
