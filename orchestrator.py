@@ -479,6 +479,77 @@ class Orchestrator:
         success = status == "success"
         return key, agent.name, response, success
 
+    # ─── Compression gate ─────────────────────────────────────────────────────
+
+    def _compress_proposals(self, proposals: dict[str, str]) -> str:
+        """
+        Extract ## Summary blocks from Round 1 proposals into a conflict-preserving
+        compressed summary stored as 'round1_compressed' in the context store.
+
+        Fallback chain per agent:
+          1. Self-authored ## Summary block (regex extraction — zero cost)
+          2. Planner LLM re-summarization (one call per missing agent)
+          3. Character truncation to 500 chars (always succeeds)
+
+        Returns the compressed string. Logs extraction stats to session JSON.
+        """
+        TRUNCATION_LIMIT = 500
+        summaries: dict[str, str] = {}
+        stats = {"extracted": 0, "resummarized": 0, "truncated": 0}
+
+        for agent_name, response in proposals.items():
+            # Primary: regex-extract the self-authored ## Summary block.
+            # Matches from the ## Summary heading to the next ## heading or end of string.
+            match = re.search(
+                r"##\s+Summary\s*\n(.*?)(?=\n##\s|\Z)",
+                response,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if match:
+                summaries[agent_name] = match.group(1).strip()
+                stats["extracted"] += 1
+                continue
+
+            # Fallback 1: LLM re-summarization via Planner.
+            try:
+                resummary = self.planner.respond(
+                    (
+                        f"Summarize the following agent proposal in 3–5 concise bullet points. "
+                        f"Preserve all concrete recommendations and note any conflicts.\n\n"
+                        f"{response[:3000]}"
+                    ),
+                    {"round": "compression", "agent": agent_name},
+                    self.backend_config,
+                )
+                summaries[agent_name] = resummary.strip()
+                stats["resummarized"] += 1
+            except RuntimeError:
+                # Fallback 2: character truncation — always succeeds.
+                summaries[agent_name] = response[:TRUNCATION_LIMIT]
+                stats["truncated"] += 1
+
+        compressed = "\n\n".join(
+            f"### {agent_name}\n{summary}" for agent_name, summary in summaries.items()
+        )
+        self.context.set("round1_compressed", compressed)
+
+        with self._log_lock:
+            print_status(
+                f"Compression gate: {stats['extracted']} self-extracted, "
+                f"{stats['resummarized']} re-summarized, {stats['truncated']} truncated"
+            )
+
+        self._append_session_entry({
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "event": "compression_gate",
+            "agents_compressed": len(proposals),
+            "extracted": stats["extracted"],
+            "resummarized": stats["resummarized"],
+            "truncated": stats["truncated"],
+        })
+
+        return compressed
+
     # ─── Agent selection ──────────────────────────────────────────────────────
 
     def _select_agents(self, project_description: str) -> list[str]:
@@ -738,6 +809,10 @@ class Orchestrator:
         # Step 2: Round 1 — Initial proposals
         round1 = self._run_round(selected, project_description, round_num=1, is_challenge_round=False)
         self.context.set("round1_proposals", round1)
+
+        # Step 2b: Compression gate — compress Round 1 proposals before Round 2 agents see them.
+        # Stores 'round1_compressed' in context; picked up automatically via _SNAPSHOT_KEYS_ROUND2.
+        self._compress_proposals(round1)
 
         # Step 3: Round 2 — Challenge/support round
         round2 = self._run_round(selected, project_description, round_num=2, is_challenge_round=True)
