@@ -1,243 +1,363 @@
-# Tasks: OpenClaw Webhook Integration
+# MAS Optimization — Implementation Tasks
 
-## Objective
-Integrate outbound OpenClaw webhook notifications into the `as_completed` loop of the orchestrator, fix the broken FIFO writer path, and harden the SSE server — all without blocking the agent debate pipeline.
-
----
-
-## Task 1 — Create `notifier.py` with `NotificationEmitter`
-
-**File:** `notifier.py` (new)
-
-**Purpose:** Encapsulate all notification side-effects (FIFO write + outbound webhook POST) behind a single `.emit()` interface. Keeps orchestrator clean and makes the notifier independently testable.
-
-**Pydantic schema:**
-```python
-from pydantic import BaseModel
-from typing import Literal
-
-class AgentEvent(BaseModel):
-    event: Literal["agent.completed", "agent.failed"]
-    session_id: str
-    agent: str
-    agent_key: str
-    round: str
-    status: Literal["success", "error", "validation_failed"]
-    duration_s: float
-    timestamp: str        # ISO 8601 UTC
-    summary: str          # first 200 chars of response, stripped of newlines
-```
-
-**Class signature:**
-```python
-class NotificationEmitter:
-    def __init__(
-        self,
-        fifo_path: str,
-        webhook_url: str | None,
-        webhook_secret: str | None,
-        timeout_s: float = 3.0,
-    ): ...
-
-    def emit(self, event: AgentEvent) -> None:
-        """Write to FIFO (sync, non-blocking) and fire webhook (background thread)."""
-        ...
-
-    def _write_fifo(self, payload: str) -> None:
-        """Open FIFO O_WRONLY|O_NONBLOCK, write line, close. Silently skip if no reader."""
-        ...
-
-    def _deliver_webhook(self, payload: str) -> None:
-        """POST payload to webhook URL with HMAC-SHA256 signature header. One retry."""
-        ...
-
-    def _sign(self, payload: str) -> str:
-        """Return hex HMAC-SHA256 of payload using webhook_secret."""
-        ...
-```
-
-**Module-level singletons:**
-```python
-_webhook_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="webhook")
-_http_client = httpx.Client(timeout=5.0, limits=httpx.Limits(max_connections=10))
-```
-
-**HMAC signing:**
-- Header name: `X-MAS-Signature`
-- Format: `sha256=<hex_digest>`
-- Algorithm: `hmac.new(secret.encode(), payload.encode(), hashlib.sha256)`
-
-**FIFO open flags:**
-```python
-fd = os.open(fifo_path, os.O_WRONLY | os.O_NONBLOCK)
-```
-Wrap in `try/except OSError` — if no reader is attached (`errno.ENXIO`), log at DEBUG and skip silently.
-
-**Retry logic:**
-```python
-for attempt in range(2):
-    try:
-        resp = _http_client.post(url, content=payload, headers=headers, timeout=timeout_s)
-        if resp.status_code < 500:
-            return
-    except httpx.RequestError:
-        pass
-    if attempt == 0:
-        time.sleep(2.0)
-# Log failure with domain only (never log full URL — may contain token)
-```
-
-**Logging:**
-- Log webhook domain only: `urllib.parse.urlparse(url).netloc`
-- Never log `webhook_url` or `webhook_secret` in full
-- Use existing `_log_cli_call` pattern from orchestrator for consistency
-
-**Dependencies to add:**
-- `httpx` (likely already present; confirm in `requirements.txt`)
+> Synthesized 2026-03-16 — Final plan post-debate.
+> Protocol: CLAUDE.md §Task Protocol — full signatures, explicit file paths, retry limits apply.
 
 ---
 
-## Task 2 — Wire `NotificationEmitter` into `orchestrator.py`
+## Phase 1: Snapshot Key Filtering
+**Risk:** Minimal | **Estimated Token Savings:** ~10–15% per agent call
+
+### Task 1.1 — Add `keys` parameter to `ContextStore.snapshot()`
+
+**File:** `context_store.py`
+**Target line:** ~67 (existing `snapshot()` method)
+
+**Signature:**
+```python
+def snapshot(self, keys: list[str] | None = None) -> dict:
+    """
+    Return a shallow copy of the context store.
+
+    Args:
+        keys: If provided, return only the specified keys (missing keys are
+              silently skipped). If None, return the full store (preserves
+              existing behavior).
+
+    Returns:
+        dict: Filtered or full snapshot. Lists are shallow-copied to prevent mutation.
+    """
+    with self._lock:
+        source = (
+            self._store
+            if keys is None
+            else {k: self._store[k] for k in keys if k in self._store}
+        )
+        return {
+            k: list(v) if isinstance(v, list) else v
+            for k, v in source.items()
+        }
+```
+
+**Acceptance criteria:**
+- `snapshot()` with no args returns identical output to current behavior
+- `snapshot(keys=["x"])` returns only key `x`; missing keys do not raise
+- Thread-safety: `_lock` still wraps the full operation
+
+---
+
+### Task 1.2 — Update `_call_agent` and `_synthesize` snapshot call sites
 
 **File:** `orchestrator.py`
+**Target lines:** ~286 (inside `_call_agent`), ~604 (inside `_synthesize`)
 
-**Changes:**
-
-1. Import `NotificationEmitter` and `AgentEvent` from `notifier.py`
-
-2. In `Orchestrator.__init__`, instantiate the emitter:
+**Add module-level constant:**
 ```python
-fifo_path = os.getenv("MAS_FIFO_PATH", _default_fifo_path())
-self._emitter = NotificationEmitter(
-    fifo_path=fifo_path,
-    webhook_url=os.getenv("OPENCLAW_WEBHOOK_URL"),
-    webhook_secret=os.getenv("OPENCLAW_WEBHOOK_SECRET"),
-    timeout_s=float(os.getenv("WEBHOOK_TIMEOUT_S", "3")),
+ROUND_SNAPSHOT_KEYS: dict[str, list[str]] = {
+    "round1":    ["project_description"],
+    "round2":    ["round1_compressed", "project_description", "errors"],
+    "synthesis": ["proposals", "challenges", "round1_compressed", "errors"],
+}
+```
+
+**Replace at line ~286 inside `_call_agent`:**
+```python
+# Before:
+ctx["context_store"] = self.context.snapshot()
+
+# After:
+round_key = ctx.get("round", "round1")
+ctx["context_store"] = self.context.snapshot(
+    keys=ROUND_SNAPSHOT_KEYS.get(round_key)
 )
 ```
 
-3. In `_run_round`, inside the `as_completed` loop at line ~514, immediately after `results[key] = ...`:
+**Replace at line ~604 inside `_synthesize`:**
 ```python
-for future in as_completed(future_to_key):
-    key, agent_name, response, success = future.result()
-    results[key] = (agent_name, response, success)
-    # Real-time notification — non-blocking
-    self._emitter.emit(AgentEvent(
-        event="agent.completed" if success else "agent.failed",
-        session_id=self.session_id,
-        agent=agent_name,
-        agent_key=key,
-        round=round_label,
-        status="success" if success else "error",
-        duration_s=0.0,  # TODO: track per-future start time
-        timestamp=datetime.utcnow().isoformat() + "Z",
-        summary=response[:200].replace("\n", " "),
-    ))
+ctx["context_store"] = self.context.snapshot(
+    keys=ROUND_SNAPSHOT_KEYS["synthesis"]
+)
 ```
 
-4. Add `_default_fifo_path()` helper:
-```python
-def _default_fifo_path() -> str:
-    runtime = os.getenv("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return os.path.join(runtime, "mas", "events.fifo")
-```
-
-**Constraint:** `emit()` must never raise. Wrap the call in `try/except Exception` with a log-only fallback inside `NotificationEmitter.emit()`.
+**Acceptance criteria:**
+- Round 1 agents do not receive Round 2 or challenge data
+- Synthesis receives proposals, challenges, errors — nothing else
+- Existing session JSON logs still serialize correctly
 
 ---
 
-## Task 3 — Fix `notification_server.py`
+## Phase 2: Compression Gate
+**Risk:** Low | **Estimated Token Savings:** ~60–70% on Round 2 inputs
 
-**File:** `notification_server.py`
+### Task 2.1 — Agent self-compression protocol
 
-### 3a — Fix FIFO path (security fix)
+**Scope:** System prompt update for all agent roles
 
-Replace:
-```python
-FIFO_PATH = "/tmp/mas-events.fifo"
+Each agent's system prompt must include the following footer instruction:
+
 ```
-With:
-```python
-def _default_fifo_path() -> str:
-    runtime = os.getenv("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
-    return os.path.join(runtime, "mas", "events.fifo")
+At the end of your response, append a section exactly as follows:
 
-FIFO_PATH = os.getenv("MAS_FIFO_PATH", _default_fifo_path())
-```
+## Summary
+- [bullet: your most important recommendation]
+- [bullet: key constraint or risk you identified]
+- [bullet: any explicit disagreement with another agent's position, if applicable]
 
-In `_ensure_fifo()`, create the parent directory if absent:
-```python
-os.makedirs(os.path.dirname(FIFO_PATH), mode=0o700, exist_ok=True)
+Maximum 4 bullets. This section is used for inter-round compression.
 ```
 
-### 3b — Add bearer token auth to `/events`
-
-```python
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-_bearer = HTTPBearer(auto_error=False)
-_SSE_TOKEN = os.getenv("MAS_SSE_TOKEN")  # if unset, auth is disabled (dev mode)
-
-def _verify_token(creds: HTTPAuthorizationCredentials | None = Depends(_bearer)):
-    if _SSE_TOKEN and (not creds or creds.credentials != _SSE_TOKEN):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED)
-```
-
-Apply as dependency:
-```python
-@app.get("/events")
-async def stream_events(_, verified=Depends(_verify_token)):
-```
-
-### 3c — Remove subscriber count from `/health`
-
-`/health` must not leak internal state to unauthenticated callers:
-```python
-@app.get("/health")
-async def health():
-    return {"status": "ok"}
-```
+**Acceptance criteria:**
+- All agent responses in Round 1 contain a `## Summary` section
+- Bullets are self-authored — no cross-agent reinterpretation
 
 ---
 
-## Task 4 — Environment Variable Documentation
+### Task 2.2 — Implement `_compress_proposals()` on `Orchestrator`
 
-**File:** `.env.example` (create if absent, or append)
+**File:** `orchestrator.py`
+**Insert after:** existing `_synthesize` method
 
-```bash
-# OpenClaw webhook integration
-OPENCLAW_WEBHOOK_URL=https://hooks.openclaw.io/t/your-hook-id/...
-OPENCLAW_WEBHOOK_SECRET=your-shared-secret
+**Signature:**
+```python
+def _compress_proposals(
+    self,
+    proposals: dict[str, str],
+    *,
+    model: str = "gemini-flash",
+    max_bullets_per_agent: int = 4,
+) -> str:
+    """
+    Compress Round 1 proposals into a conflict-preserving summary.
 
-# SSE server auth (leave unset to disable in dev)
-MAS_SSE_TOKEN=your-sse-token
+    Extracts "## Summary" blocks from each agent's self-compressed response.
+    Falls back to cheapest-model summarization if Summary blocks are missing.
+    Falls back to character truncation if model call fails or exceeds 10s.
 
-# Webhook delivery timeout in seconds (default: 3)
-WEBHOOK_TIMEOUT_S=3
+    Args:
+        proposals: Mapping of agent_name → full proposal text.
+        model: Backend model key for fallback summarization.
+        max_bullets_per_agent: Maximum bullets to retain per agent.
 
-# FIFO path override (default: $XDG_RUNTIME_DIR/mas/events.fifo)
-MAS_FIFO_PATH=
+    Returns:
+        str: Compressed multi-agent summary stored in context as
+             "round1_compressed". Format: Markdown bullet list per agent.
+
+    Side effects:
+        - Calls self.context.set("round1_compressed", result)
+        - Logs to session JSON under "compression_stats":
+          {input_tokens, output_tokens, method: "self"|"llm"|"fallback"}
+
+    Raises:
+        Never — all failures fall back to truncation.
+    """
 ```
 
+**Summary extraction logic:**
+```python
+import re
+
+def _extract_summary_block(text: str) -> str | None:
+    """Extract '## Summary' section from agent response, if present."""
+    match = re.search(r"##\s+Summary\s*\n((?:[-*].+\n?)+)", text, re.IGNORECASE)
+    return match.group(0).strip() if match else None
+```
+
+**Fallback compression prompt (module-level constant):**
+```python
+COMPRESSION_PROMPT = """\
+Compress these Round 1 debate proposals. Rules:
+1. For each agent, emit at most {max_bullets} bullet points.
+2. PRESERVE explicit disagreements: "CONFLICT: [AgentA] says X; [AgentB] says Y."
+3. Do not resolve conflicts. Do not editorialize.
+4. Format: ## [AgentName]\n- bullet\n- bullet
+
+Proposals:
+{proposals_block}
+"""
+```
+
+**Character truncation fallback:**
+```python
+TRUNCATION_FALLBACK_CHARS = 500
+
+def _fallback_compress(proposals: dict[str, str]) -> str:
+    return "\n\n".join(
+        f"## {name}\n{text[:TRUNCATION_FALLBACK_CHARS]}..."
+        for name, text in proposals.items()
+    )
+```
+
+**Acceptance criteria:**
+- Self-authored `## Summary` blocks are preferred over LLM re-summarization
+- LLM fallback used only when Summary blocks are absent from >50% of proposals
+- Character truncation fallback used if model call raises or times out (10s)
+- `compression_stats.method` reflects which path was taken: `"self"`, `"llm"`, or `"fallback"`
+- CONFLICT lines present in output when proposals diverge
+
 ---
 
-## Acceptance Criteria
+### Task 2.3 — Wire compression gate into `run_planner_debate()`
 
-- [ ] When an agent future resolves in `as_completed`, a POST fires to `OPENCLAW_WEBHOOK_URL` within 100ms (non-blocking from the orchestrator's perspective)
-- [ ] Webhook payload includes all `AgentEvent` fields; `summary` is truncated to 200 chars
-- [ ] `X-MAS-Signature: sha256=<hmac>` header is present on every POST
-- [ ] A dead webhook endpoint (connection refused, 500, timeout) does not stall or crash the debate loop
-- [ ] FIFO events continue to reach SSE subscribers as before
-- [ ] `GET /events` returns 401 when `MAS_SSE_TOKEN` is set and token is missing or wrong
-- [ ] No webhook URL or secret appears in `logs/cli_calls.log` or session JSON logs
-- [ ] FIFO is created under `$XDG_RUNTIME_DIR/mas/` not `/tmp/`
+**File:** `orchestrator.py`
+**Target:** Inside `run_planner_debate()`, after Round 1 agent dispatch loop
+
+```python
+# After Round 1 completes:
+round1_proposals = {
+    name: self.context.get(f"{name}_proposal", "")
+    for name in self.agent_names
+}
+self._compress_proposals(round1_proposals)
+# Round 2 dispatch follows — _call_agent injects "round1_compressed"
+```
+
+**Acceptance criteria:**
+- `_compress_proposals` called exactly once per session
+- Round 2 agents receive `round1_compressed`, not raw `proposals` dict
+- Order: compress → Round 2 dispatch (never parallel)
 
 ---
 
-## Out of Scope
+## Phase 3: Spec Content Deduplication
+**Risk:** Zero | **Estimated Impact:** Eliminates N repeated file reads per session
 
-- Async rewrite of the orchestrator
-- Message queue (Redis, RabbitMQ)
-- Per-event delivery guarantees / at-least-once semantics
-- OpenClaw inbound webhook verification (that is OpenClaw's responsibility)
+### Task 3.1 — Cache `spec.md` at `Orchestrator.__init__`
+
+**File:** `orchestrator.py`
+**Target:** `__init__` method
+
+**Add to `__init__`:**
+```python
+spec_path = Path(self.project_path) / "spec.md"
+if not spec_path.exists():
+    raise FileNotFoundError(
+        f"spec.md not found at {spec_path}. "
+        "Cannot initialize Orchestrator without a project spec."
+    )
+self.spec_content: str = spec_path.read_text(encoding="utf-8")
+```
+
+**Remove from `run_agent()` (~line 690–695):**
+```python
+# DELETE:
+with open(os.path.join(self.project_path, "spec.md")) as f:
+    spec_content = f.read()
+```
+
+**Replace with:**
+```python
+spec_content = self.spec_content  # loaded at __init__
+```
+
+**Also add to `run_planner_debate()`** (currently does not load spec at all):
+```python
+spec_content = self.spec_content
+```
+
+**Acceptance criteria:**
+- `spec.md` read exactly once per `Orchestrator` instance
+- `FileNotFoundError` at construction time, not at first agent call
+- Both `run_agent()` and `run_planner_debate()` use `self.spec_content`
+
+---
+
+## Phase 4: SDK Migration + Prompt Caching
+**Risk:** Medium | **Estimated Savings:** ~40% on static blocks
+**Prerequisite:** Phases 1–3 complete and verified in production session logs
+
+### Task 4.1 — Replace Claude subprocess with Anthropic SDK
+
+**File:** `agents.py`
+**Target lines:** ~56–117 (subprocess-based `respond()`)
+
+**New signature:**
+```python
+import anthropic
+
+def respond(
+    self,
+    prompt: str,
+    *,
+    system_prompt: str,
+    cache_system_prompt: bool = True,
+) -> tuple[str, dict]:
+    """
+    Send prompt to Claude via Anthropic SDK.
+
+    Args:
+        prompt: User-turn content.
+        system_prompt: System prompt. Wrapped with cache_control if
+                       cache_system_prompt=True.
+        cache_system_prompt: Apply ephemeral cache_control to system prompt.
+                             Default True. Set False for one-off dynamic prompts.
+
+    Returns:
+        tuple[str, dict]: (response_text, usage_stats)
+        usage_stats keys: input_tokens, output_tokens,
+                          cache_creation_input_tokens, cache_read_input_tokens
+
+    Raises:
+        anthropic.APIError: Re-raised after logging.
+    """
+```
+
+**Cache control structure:**
+```python
+system_block = [
+    {
+        "type": "text",
+        "text": system_prompt,
+        **({"cache_control": {"type": "ephemeral"}} if cache_system_prompt else {}),
+    }
+]
+```
+
+**Acceptance criteria:**
+- No subprocess calls remain for Claude-backend agents
+- `usage_stats` written to session JSON per agent call
+- `cache_read_input_tokens > 0` in logs on second+ call with identical system prompt
+- Gemini agents continue using existing path until Phase 4b
+
+### Task 4.2 — Gemini SDK migration (Phase 4b)
+
+**File:** `agents.py`
+**Scope:** Replace `gemini --yolo` subprocess with `google-generativeai` SDK
+**Note:** Usage tracking only — Gemini context caching API differs from Anthropic's
+         and requires separate design decision before implementation.
+
+---
+
+## Dropped: Code Stubs
+
+Code stub generation via tree-sitter, CTags, or stdlib `ast` is **removed from scope**.
+
+**Rationale:** No file-stability oracle exists in the current codebase. "Stable = no
+commits in 7 days" requires `git log` per file on every session start. Snapshot key
+filtering (Phase 1) achieves selective injection without hallucination risk from hidden
+implementations. Revisit only if Phase 1–3 savings prove insufficient at scale.
+
+---
+
+## Implementation Order
+
+```
+Task 1.1 → Task 1.2 → Task 3.1 → Task 2.1 → Task 2.2 → Task 2.3 → Task 4.1 → Task 4.2
+  (no deps)  (needs 1.1) (independent) (independent) (needs 2.1) (needs 2.2) (needs all) (needs 4.1)
+```
+
+Phases 1 and 3 can be implemented in parallel. Phase 2 requires Phase 1 (snapshot keys
+must exist before compression gate reads them). Phase 4 requires all prior phases verified.
+
+---
+
+## Verification Checklist
+
+```
+[ ] Phase 1: session log shows ≤3 keys in Round 1 context_store per agent
+[ ] Phase 1: Round 2 agents show "round1_compressed" key, not raw proposals dict
+[ ] Phase 2: session JSON contains compression_stats.method field
+[ ] Phase 2: CONFLICT lines present when agent proposals diverge
+[ ] Phase 3: "spec.md read" log line appears exactly once per session
+[ ] Phase 4: cache_read_input_tokens > 0 on second session with same system prompt
+[ ] All phases: debate quality unchanged (proposal length, synthesis coherence)
+```
