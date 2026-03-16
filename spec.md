@@ -1,78 +1,128 @@
-# Multi-Agent System (MAS) Optimization Specification
+# Multi-Agent System (MAS) Specification
 
-## Executive Summary
+## 1. System Architecture
 
-The Multi-Agent System suffers from O(n²) token growth caused by three compounding issues
-in `orchestrator.py`: unconditional full-store snapshot injection on every agent call,
-repeated `spec.md` file reads per invocation, and no inter-round compression. The fix is
-a four-phase incremental hardening plan delivering an estimated 60–80% token reduction
-across a full session. Code stubs are out of scope — the stability-tracking overhead
-exceeds the benefit. SDK migration is Phase 4 (not Phase 1) because Phases 1–3 deliver
-the majority of savings with zero regression risk and require no SDK instrumentation to
-verify.
+The MAS consists of an Orchestrator and specialized Agents. The Orchestrator manages debate rounds, context, and agent dispatch. Agents produce proposals in parallel via `ThreadPoolExecutor`.
 
-## Recommended Tech Stack
-
-| Component | Choice | Reasoning |
-|-----------|--------|-----------|
-| Context filtering | `ContextStore.snapshot(keys=)` | Zero-dep, reversible, backward-compatible |
-| Compression | Self-compression per agent + cheapest model fallback | Avoids cross-agent bias; fallback is char truncation |
-| Spec loading | `self.spec_content` at `__init__` | Eliminates N repeated file reads per session |
-| SDK (Phase 4) | `anthropic` Python SDK | Unlocks `cache_control`, structured usage stats, eliminates 300ms subprocess overhead |
-| Gemini SDK (Phase 4b) | `google-generativeai` | Parallel migration, usage tracking parity |
-
-Code stubs via tree-sitter or CTags are **dropped** — no stability oracle exists in the
-current codebase, and snapshot key filtering achieves selective injection without
-hallucination risk from hidden implementations.
-
-## Architecture Overview
+### Orchestration Flow
 
 ```
-Session Start
-  └─ Orchestrator.__init__()
-       └─ load spec.md ONCE → self.spec_content           [Phase 3]
-
-Round 1 Dispatch (parallel via ThreadPoolExecutor)
-  └─ _call_agent(round="round1")
-       └─ snapshot(keys=["project_description"])           [Phase 1]
-       └─ agent appends "## Summary\n- bullet..." block    [Phase 2]
-
-_compress_proposals()  — runs once after Round 1           [Phase 2]
-  └─ collects per-agent Summary blocks
-  └─ stores context["round1_compressed"]
-  └─ fallback: 500-char truncation per agent if model call fails/times out
-
-Round 2 Dispatch (parallel)
-  └─ _call_agent(round="round2")
-       └─ snapshot(keys=["round1_compressed",              [Phase 1]
-                          "project_description", "errors"])
-
-Synthesis
-  └─ _synthesize()
-       └─ snapshot(keys=["proposals", "challenges",        [Phase 1]
-                          "round1_compressed", "errors"])
-
-Phase 4 (deferred — prerequisite: Phases 1–3 verified):
-  agents.py respond() → anthropic.messages.create()
-    system_prompt → cache_control: {"type": "ephemeral"}
-    returns (text, usage_stats) with cache_read_input_tokens
+SELECTING → PROPOSING → CHALLENGING → REVIEWING → SYNTHESIZING → DONE
 ```
 
-### Key Snapshot Key Map
+- **Parallelism:** Round agents run in parallel via `ThreadPoolExecutor`
+- **Persistence:** Every session creates a structured JSON log in `logs/session-{id}.json`
+- **Verification:** The Orchestrator must verify file existence and content after completion
+
+---
+
+## 2. Context & Snapshot Filtering (Phase 1)
+
+The `ContextStore.snapshot()` method accepts an optional `keys` parameter. Round agents receive only the context keys relevant to their round — not the full store.
+
+```
+Round 1:    keys=["project_description"]
+Round 2:    keys=["round1_compressed", "project_description", "errors"]
+Synthesis:  keys=["proposals", "challenges", "round1_compressed", "errors"]
+```
+
+**Estimated token savings:** ~10–15% per agent call.
+
+---
+
+## 3. Compression Gate (Phase 2)
+
+After Round 1, `_compress_proposals()` extracts `## Summary` blocks (self-authored by agents) into a conflict-preserving compressed summary stored as `round1_compressed`. Round 2 agents receive this compressed form, not raw proposals.
+
+**Fallback chain:** self-authored summary → LLM re-summarization → character truncation.
+
+**Estimated token savings:** ~60–70% on Round 2 inputs.
+
+---
+
+## 4. Spec Content Deduplication (Phase 3)
+
+`spec.md` is read once at `Orchestrator.__init__` and stored as `self.spec_content`. No per-call file reads. `FileNotFoundError` raised at construction time, not at first agent call.
+
+---
+
+## 5. SDK Migration + Prompt Caching (Phase 4)
+
+Replace subprocess-based agent invocation with the Anthropic SDK. Apply `cache_control: ephemeral` to system prompts to cache static blocks across calls.
+
+**Estimated savings:** ~40% on static prompt blocks.
+
+---
+
+## 6. Skills System (Phase 5)
+
+To enhance output quality without polluting the core persona, the system uses a modular **Skill Injection** architecture. Skills are role-specific behavioral constraints loaded once at session start and appended to agent system prompts.
+
+### 6.1 Storage Structure
+
+```
+skills/
+  Architect/SKILL.md
+  BackendDev/SKILL.md
+  FrontendDev/SKILL.md
+  Security/SKILL.md
+  Researcher/SKILL.md
+  Skeptic/SKILL.md
+  _shared/          ← created only when duplication is empirically proven
+```
+
+**Design decisions:**
+- One file per agent = granular version control (`git diff skills/Security/SKILL.md`)
+- Markdown format = directly embeddable into system prompts without transformation
+- No YAML registry or frontmatter parsing — plain Markdown concatenation
+- Flat tag subscriptions rejected: moves complexity to Orchestrator tag-resolution logic
+- Keyword-based conditional injection rejected: non-deterministic, fragile synonym coverage
+
+### 6.2 Loading
 
 ```python
-ROUND_SNAPSHOT_KEYS = {
-    "round1":    ["project_description"],
-    "round2":    ["round1_compressed", "project_description", "errors"],
-    "synthesis": ["proposals", "challenges", "round1_compressed", "errors"],
-}
+# Orchestrator.__init__
+self.agent_skills: dict[str, str] = self._load_skills()
 ```
 
-### Estimated Token Savings Per Phase
+`_load_skills()` iterates `self.agent_names`, reads each `skills/{AgentName}/SKILL.md`, returns empty string for missing files (graceful degradation — no error). No `@lru_cache` — the instance dict is the cache.
 
-| Phase | Change | Token Impact |
-|-------|--------|-------------|
-| 1 | Snapshot key filtering | ~10–15% per agent call |
-| 2 | Compression gate | ~60–70% on Round 2 inputs |
-| 3 | Spec deduplication | Eliminates N file reads |
-| 4 | SDK + cache_control | ~40% on static blocks |
+### 6.3 Injection
+
+```python
+def _build_system_prompt(self, agent_name: str, base_prompt: str) -> str:
+    skill_content = self.agent_skills.get(agent_name, "")
+    if not skill_content.strip():
+        return base_prompt
+    return f"{base_prompt}\n\n## Your Specialized Skills\n{skill_content}"
+```
+
+**Prompt structure per agent call:**
+1. Role identity (from `AGENT_PROMPTS[agent_name]`)
+2. Specialized Skills (from `skills/{AgentName}/SKILL.md`)
+3. Dynamic context (from `ContextStore`, filtered by Phase 1)
+4. Task (user request)
+
+Skills are **appended** after the base prompt so role behavioral instructions are not overridden.
+
+### 6.4 Assigned Skills Per Agent
+
+| Agent | Core Skills |
+|-------|-------------|
+| **Architect** | Service boundaries, tradeoff analysis, Pydantic data models, async/Decimal constraints |
+| **BackendDev** | Python async/await, Pydantic v2, path sanitization, integration testing (real deps) |
+| **FrontendDev** | TypeScript strict mode, WCAG 2.1 AA, bundle optimization, Zod boundary validation |
+| **Security** | OWASP Top 10, threat modeling, secrets hygiene, auth/authz separation, least-privilege |
+| **Researcher** | Evidence synthesis, source evaluation, confidence quantification, bias detection |
+| **Skeptic** | Assumption surfacing, worst-case analysis, complexity challenge, alternative proposals |
+
+### 6.5 Guardrails
+
+- **Token cap:** Each `SKILL.md` must be ≤200 tokens
+- **Enforcement:** `scripts/lint_skills.py` runs as a pre-commit hook; blocks commits that violate the cap
+- **Tokenizer:** `tiktoken` with `cl100k_base` encoding (same encoding used by Claude-compatible models)
+- **Observability:** Session JSON logs `skills_injected: true/false` per agent call; final assembled prompt logged to `logs/prompts/{timestamp}_{agent}.txt`
+
+### 6.6 Shared Skills
+
+A `skills/_shared/` directory is created **only when the same content appears verbatim in ≥2 agent skill files**. No preemptive shared abstractions. Agents that appear to need the same skill (e.g., SQL optimization) typically need different aspects of it: Architect needs query planner awareness; BackendDev needs parameterized query syntax. These are not the same skill.

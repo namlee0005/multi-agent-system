@@ -327,6 +327,235 @@ system_block = [
 
 ---
 
+## Phase 5: Skills System
+**Risk:** Low | **Impact:** Output quality improvement per agent role
+**Prerequisite:** None (independent of Phases 1–4; can be implemented in parallel)
+
+### Task 5.1 — Create SKILL.md files for each agent role
+
+**Files to create:**
+
+**`skills/Architect/SKILL.md`**
+```markdown
+## Architect Skills
+
+- Propose concrete architectures with explicit service boundaries and data flows
+- Evaluate monolith vs microservices vs serverless tradeoffs with justification
+- Define Pydantic data models and storage patterns before implementation begins
+- Flag architectural risks: single points of failure, bottlenecks, tight coupling
+- Use `Numeric`/`Decimal` for financial data; never `Float`
+- Prefer async/await for all I/O-bound operations
+- Bound every design decision to the minimum viable complexity for current requirements
+```
+
+**`skills/BackendDev/SKILL.md`**
+```markdown
+## BackendDev Skills
+
+- Implement Python async/await for all I/O-bound tasks (DB, Redis, external APIs)
+- Use Pydantic v2 models for all data validation at system boundaries
+- Sanitize file paths; restrict writes to project path to prevent traversal
+- Use `Decimal` for monetary values; never `float`
+- Apply thread-safe logging with `_log_lock` for shared log file writes
+- Prefer explicit error types over bare `Exception` catches
+- Write integration tests against real dependencies, not mocks
+```
+
+**`skills/FrontendDev/SKILL.md`**
+```markdown
+## FrontendDev Skills
+
+- Use TypeScript strict mode; no implicit `any`
+- Prefer server components over client components in Next.js where possible
+- Apply WCAG 2.1 AA accessibility standards to all interactive elements
+- Minimize bundle size: code-split by route, lazy-load heavy dependencies
+- Co-locate component tests with component files
+- Use CSS modules or Tailwind; avoid global style mutations
+- Validate all API responses at the boundary with Zod or equivalent
+```
+
+**`skills/Security/SKILL.md`**
+```markdown
+## Security Skills
+
+- Apply OWASP Top 10 checks to all proposed designs
+- Mandate secrets in environment variables or secret managers; never hardcoded
+- Require auth/authz review on every endpoint: authentication + authorization separate
+- Flag SQL injection, XSS, CSRF, and path traversal risks explicitly
+- Propose threat model: identify assets, threats, mitigations before implementation
+- Enforce least-privilege: services request only permissions they need
+- Require audit logging for all privileged operations
+```
+
+**`skills/Researcher/SKILL.md`**
+```markdown
+## Researcher Skills
+
+- Synthesize evidence from multiple sources before forming conclusions
+- Distinguish primary sources from secondary; flag single-source claims
+- Quantify uncertainty: state confidence levels and evidence gaps explicitly
+- Structure findings: context → evidence → conclusion → open questions
+- Detect and name cognitive biases in proposed approaches
+- Prefer reproducible benchmarks over anecdotal performance claims
+- Flag when a claim requires empirical validation before implementation
+```
+
+**`skills/Skeptic/SKILL.md`**
+```markdown
+## Skeptic Skills
+
+- Surface unstated assumptions in every proposal before accepting them
+- Apply worst-case analysis: what breaks at 10x scale, under network partition, at peak load
+- Identify logical fallacies: false dichotomy, appeal to authority, premature optimization
+- Challenge complexity: ask "what is the simplest design that satisfies the requirement?"
+- Flag coupling: identify hidden dependencies between proposed components
+- Require evidence for performance or reliability claims
+- Propose at least one alternative approach to every recommendation
+```
+
+**Acceptance criteria:**
+- All 6 SKILL.md files exist at `skills/{AgentName}/SKILL.md`
+- Each file is ≤200 tokens (verified by Task 5.4 lint script)
+- Content is actionable and role-specific — not generic best practices
+
+---
+
+### Task 5.2 — Implement `_load_skills()` on `Orchestrator`
+
+**File:** `orchestrator.py`
+**Target:** `__init__` method, after `self.spec_content` assignment
+
+**Add to `__init__`:**
+```python
+self.agent_skills: dict[str, str] = self._load_skills()
+```
+
+**New method:**
+```python
+def _load_skills(self) -> dict[str, str]:
+    """
+    Load SKILL.md files for all known agent roles.
+
+    Looks for skills/{AgentName}/SKILL.md relative to the project root.
+    Missing files produce an empty string (graceful degradation — no error).
+
+    Returns:
+        dict[str, str]: Mapping of agent_name → skill content (may be empty string).
+    """
+    skills: dict[str, str] = {}
+    skills_root = Path(self.project_path) / "skills"
+    for agent_name in self.agent_names:
+        skill_path = skills_root / agent_name / "SKILL.md"
+        if skill_path.exists():
+            skills[agent_name] = skill_path.read_text(encoding="utf-8")
+        else:
+            skills[agent_name] = ""
+    return skills
+```
+
+**Note:** No `@lru_cache` — the instance dict `self.agent_skills` *is* the cache.
+`@lru_cache` on a module-level function bleeds cache state between test runs and is redundant here.
+
+**Acceptance criteria:**
+- `_load_skills()` called exactly once per `Orchestrator` instance
+- Missing SKILL.md → empty string in dict; no `FileNotFoundError` raised
+- All agents in `self.agent_names` have a key in returned dict
+
+---
+
+### Task 5.3 — Inject skills into system prompts via `_build_system_prompt()`
+
+**File:** `orchestrator.py`
+**Target:** Wherever agent system prompts are assembled (search for `system_prompt` construction in `_call_agent`)
+
+**Add or modify `_build_system_prompt`:**
+```python
+def _build_system_prompt(self, agent_name: str, base_prompt: str) -> str:
+    """
+    Append agent-specific skills to the base system prompt.
+
+    Skills are appended after role identity to avoid overriding behavioral instructions.
+
+    Args:
+        agent_name: Name matching a key in self.agent_skills.
+        base_prompt: The role's base system prompt string.
+
+    Returns:
+        str: base_prompt + skills section, or base_prompt if no skills defined.
+    """
+    skill_content = self.agent_skills.get(agent_name, "")
+    if not skill_content.strip():
+        return base_prompt
+    return f"{base_prompt}\n\n## Your Specialized Skills\n{skill_content}"
+```
+
+**Wire into `_call_agent`:**
+```python
+# Before:
+system_prompt = AGENT_PROMPTS[agent_name]
+
+# After:
+system_prompt = self._build_system_prompt(agent_name, AGENT_PROMPTS[agent_name])
+```
+
+**Acceptance criteria:**
+- Skills appended after base prompt, not prepended
+- Agents with no SKILL.md receive unmodified base prompt
+- System prompt structure: `[role identity] → [behavioral instructions] → [skills]`
+- Session JSON logs include `skills_injected: true/false` per agent call
+
+---
+
+### Task 5.4 — CI lint script to enforce SKILL.md token cap
+
+**File:** `scripts/lint_skills.py`
+
+**Implementation:**
+```python
+#!/usr/bin/env python3
+"""Enforce ≤200-token cap on all SKILL.md files. Exit non-zero on violation."""
+import sys
+from pathlib import Path
+
+import tiktoken
+
+MAX_TOKENS = 200
+enc = tiktoken.get_encoding("cl100k_base")
+violations = []
+
+for skill_file in sorted(Path("skills").rglob("SKILL.md")):
+    tokens = len(enc.encode(skill_file.read_text(encoding="utf-8")))
+    if tokens > MAX_TOKENS:
+        violations.append(f"  {skill_file}: {tokens} tokens (max {MAX_TOKENS})")
+
+if violations:
+    print("SKILL.md token cap violations:")
+    print("\n".join(violations))
+    sys.exit(1)
+
+print(f"OK: all SKILL.md files within {MAX_TOKENS}-token cap")
+```
+
+**Wire into pre-commit (`.pre-commit-config.yaml` or equivalent):**
+```yaml
+- repo: local
+  hooks:
+    - id: lint-skills
+      name: Enforce SKILL.md token cap
+      entry: python scripts/lint_skills.py
+      language: python
+      additional_dependencies: [tiktoken]
+      pass_filenames: false
+```
+
+**Acceptance criteria:**
+- Script exits 0 when all SKILL.md files are within cap
+- Script exits 1 and names violating files when any exceed 200 tokens
+- Runs automatically on `git commit` when pre-commit hook is installed
+- `tiktoken` added to dev dependencies
+
+---
+
 ## Dropped: Code Stubs
 
 Code stub generation via tree-sitter, CTags, or stdlib `ast` is **removed from scope**.
@@ -343,10 +572,11 @@ implementations. Revisit only if Phase 1–3 savings prove insufficient at scale
 ```
 Task 1.1 → Task 1.2 → Task 3.1 → Task 2.1 → Task 2.2 → Task 2.3 → Task 4.1 → Task 4.2
   (no deps)  (needs 1.1) (independent) (independent) (needs 2.1) (needs 2.2) (needs all) (needs 4.1)
-```
 
-Phases 1 and 3 can be implemented in parallel. Phase 2 requires Phase 1 (snapshot keys
-must exist before compression gate reads them). Phase 4 requires all prior phases verified.
+Task 5.1 → Task 5.2 → Task 5.3 → Task 5.4
+  (no deps)  (needs 5.1)  (needs 5.2)   (needs 5.1, CI wiring)
+  [Phase 5 is fully independent — can run in parallel with Phases 1–4]
+```
 
 ---
 
@@ -359,5 +589,9 @@ must exist before compression gate reads them). Phase 4 requires all prior phase
 [ ] Phase 2: CONFLICT lines present when agent proposals diverge
 [ ] Phase 3: "spec.md read" log line appears exactly once per session
 [ ] Phase 4: cache_read_input_tokens > 0 on second session with same system prompt
+[ ] Phase 5: skills/*/SKILL.md files exist and pass lint_skills.py (≤200 tokens)
+[ ] Phase 5: session JSON contains skills_injected field per agent call
+[ ] Phase 5: agents with no SKILL.md receive unmodified base prompt (no KeyError)
+[ ] Phase 5: pre-commit hook blocks commits that violate token cap
 [ ] All phases: debate quality unchanged (proposal length, synthesis coherence)
 ```
