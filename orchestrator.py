@@ -69,6 +69,15 @@ def print_status(msg: str):
     print(color(f"  → {msg}", "gray"))
 
 
+# ─── Snapshot key sets per pipeline stage ─────────────────────────────────────
+
+# Keys passed to context_store.snapshot() at each stage.
+# round1_compressed is a Phase 2 key — omitted silently until that phase lands.
+_SNAPSHOT_KEYS_ROUND1 = ["project_description"]
+_SNAPSHOT_KEYS_ROUND2 = ["round1_compressed", "project_description", "errors"]
+_SNAPSHOT_KEYS_SYNTHESIS = ["proposals", "challenges", "round1_compressed", "errors"]
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 class Orchestrator:
@@ -301,7 +310,13 @@ class Orchestrator:
 
     # ─── Core agent call ──────────────────────────────────────────────────────
 
-    def _call_agent(self, key: str, request: str, ctx: dict) -> tuple[str, str, str, bool]:
+    def _call_agent(
+        self,
+        key: str,
+        request: str,
+        ctx: dict,
+        snapshot_keys: Optional[list[str]] = None,
+    ) -> tuple[str, str, str, bool]:
         """
         Call a single agent with retry-with-feedback (up to MAX_RETRY_ATTEMPTS).
         On validation failure, errors are appended to the prompt for the next attempt.
@@ -309,6 +324,12 @@ class Orchestrator:
         the code_reviewer agent gates the artifact; on FAIL the feedback is fed back
         to the original agent for another attempt (counted against MAX_RETRY_ATTEMPTS).
         Records timing, appends a session entry, and logs the CLI call.
+
+        Args:
+            snapshot_keys: If provided, only these keys are included in the
+                           context_store snapshot passed to the agent. None means
+                           full snapshot (used for ad-hoc / task invocations).
+
         Returns (agent_key, agent_name, response, success).
         success=False when status is 'error' or 'validation_failed'.
         """
@@ -329,8 +350,8 @@ class Orchestrator:
             with open(prompt_log_path, "w") as f:
                 f.write(agent.system_prompt)
 
-        # Enrich context with a snapshot of prior outputs so agents can reference them
-        ctx["context_store"] = self.context.snapshot()
+        # Enrich context with a filtered snapshot of prior outputs
+        ctx["context_store"] = self.context.snapshot(keys=snapshot_keys)
 
         start = time.monotonic()
         status = "success"
@@ -543,6 +564,9 @@ class Orchestrator:
             else "Analyze this project from your specialist perspective and provide your recommendations."
         )
 
+        # Select snapshot keys appropriate to this round
+        snapshot_keys = _SNAPSHOT_KEYS_ROUND2 if is_challenge_round else _SNAPSHOT_KEYS_ROUND1
+
         def call_agent_task(key: str) -> tuple[str, str, str, bool]:
             ctx = {
                 "project_description": project_description,
@@ -551,7 +575,7 @@ class Orchestrator:
             if is_challenge_round and self.context.get("round1_proposals"):
                 ctx["previous_proposals"] = self.context["round1_proposals"]
                 ctx["challenge_target"] = True
-            return self._call_agent(key, request, ctx)
+            return self._call_agent(key, request, ctx, snapshot_keys=snapshot_keys)
 
         # Fan out all agent calls in parallel
         with ThreadPoolExecutor(max_workers=len(selected_agent_keys)) as executor:
@@ -659,7 +683,7 @@ class Orchestrator:
                     "project_description": project_description,
                     "round": "synthesis",
                     "previous_proposals": combined_proposals,
-                    "context_store": self.context.snapshot(),
+                    "context_store": self.context.snapshot(keys=_SNAPSHOT_KEYS_SYNTHESIS),
                 },
                 self.backend_config,
                 project_path=self.project_path,
@@ -757,7 +781,8 @@ class Orchestrator:
             "round": f"task:{task_name}",
         }
 
-        _, _, response, _ = self._call_agent(agent_name, task_name, ctx)
+        # snapshot_keys=None → full snapshot for ad-hoc task invocations
+        _, _, response, _ = self._call_agent(agent_name, task_name, ctx, snapshot_keys=None)
         if response.startswith("**Error:**"):
             print(color(f"  ✗ Error during agent {agent_name} task '{task_name}'", "red"))
             self._write_session_log()

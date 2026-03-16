@@ -1,8 +1,7 @@
-
 """Thread-safe shared context store for the multi-agent debate pipeline."""
 
 import threading
-from typing import Any
+from typing import Any, Optional
 
 
 class ContextStore:
@@ -64,17 +63,23 @@ class ContextStore:
 
     # ── Snapshot ─────────────────────────────────────────────────────────────
 
-    def snapshot(self) -> dict:
+    def snapshot(self, keys: Optional[list[str]] = None) -> dict:
         """
-        Return a read-only shallow copy of the entire store.
+        Return a read-only shallow copy of the store.
         Passed to agents so they can read prior outputs without holding the lock.
         List buckets are copied; scalars are referenced.
+
+        Args:
+            keys: If provided, return only these keys (missing keys are silently
+                  omitted). If None, return the full store.
         """
         with self._lock:
-            snap = {}
-            for k, v in self._store.items():
-                snap[k] = list(v) if isinstance(v, list) else v
-            return snap
+            items = (
+                ((k, self._store[k]) for k in keys if k in self._store)
+                if keys is not None
+                else self._store.items()
+            )
+            return {k: (list(v) if isinstance(v, list) else v) for k, v in items}
 
     def __repr__(self) -> str:
         with self._lock:
