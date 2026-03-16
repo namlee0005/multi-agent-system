@@ -76,6 +76,9 @@ class Orchestrator:
 
     MAX_RETRY_ATTEMPTS = 3
 
+    # Directory containing skills/{AgentName}/SKILL.md files
+    _SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
+
     def __init__(
         self,
         config: dict,
@@ -97,6 +100,9 @@ class Orchestrator:
         self.all_agents = build_agents(config, project_path=project_path)
         self.all_agents['planner'] = self.planner
 
+        # Skills loaded once at init; keyed by agent display name (e.g. "BackendDev")
+        self.agent_skills: dict[str, str] = self._load_skills()
+
         # Shared context/memory store — thread-safe, grows as the debate progresses
         self.context = ContextStore()
 
@@ -110,6 +116,35 @@ class Orchestrator:
             "start_time": datetime.datetime.utcnow().isoformat() + "Z",
             "entries": [],
         }
+
+    # ─── Skills loading ───────────────────────────────────────────────────────
+
+    def _load_skills(self) -> dict[str, str]:
+        """
+        Load SKILL.md files for all agents at session start.
+        Returns a dict keyed by agent display name (e.g. "BackendDev").
+        Missing files degrade gracefully — empty string, no error.
+        """
+        skills: dict[str, str] = {}
+        for agent in self.all_agents.values():
+            skill_path = os.path.join(self._SKILLS_DIR, agent.name, "SKILL.md")
+            if os.path.isfile(skill_path):
+                with open(skill_path, "r") as f:
+                    skills[agent.name] = f.read()
+            else:
+                skills[agent.name] = ""
+        return skills
+
+    def _build_system_prompt(self, agent_name: str, base_prompt: str) -> str:
+        """
+        Append the agent's skill content to the base system prompt.
+        Skills are appended so role behavioral instructions are not overridden.
+        Returns base_prompt unchanged if no skill content exists.
+        """
+        skill_content = self.agent_skills.get(agent_name, "")
+        if not skill_content.strip():
+            return base_prompt
+        return f"{base_prompt}\n\n## Your Specialized Skills\n{skill_content}"
 
     # ─── Logging helpers ──────────────────────────────────────────────────────
 
@@ -282,6 +317,11 @@ class Orchestrator:
         with self._log_lock:
             print_status(f"Calling {agent.name} ({agent.backend}/{agent.model})...")
 
+        # Inject skills into the agent's system prompt for this call
+        skills_injected = bool(self.agent_skills.get(agent.name, "").strip())
+        if skills_injected:
+            agent.system_prompt = self._build_system_prompt(agent.name, agent.system_prompt)
+
         # Enrich context with a snapshot of prior outputs so agents can reference them
         ctx["context_store"] = self.context.snapshot()
 
@@ -390,6 +430,7 @@ class Orchestrator:
             "status": status,
             "duration_s": round(duration, 3),
             "retry_count": retry_count,
+            "skills_injected": skills_injected,
         }
         if error_detail:
             entry["error"] = error_detail
