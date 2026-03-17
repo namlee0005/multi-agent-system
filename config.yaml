@@ -2,8 +2,8 @@
 # Supported backends: claude, gemini, openai
 
 defaults:
-  backend: gemini
-  model: gemini-3-flash-preview
+  backend: claude
+  model: anthropic/claude-opus-4-6
   temperature: 0.7
 
 agents:
@@ -13,8 +13,8 @@ agents:
     temperature: 0.5  # More deterministic for orchestration
 
   researcher:
-    backend: gemini
-    model: gemini-3-flash-preview
+    backend: claude
+    model: anthropic/claude-opus-4-6
     temperature: 0.7
 
   architect:
@@ -43,8 +43,8 @@ agents:
     temperature: 0.6
 
   skeptic:
-    backend: gemini
-    model: gemini-3-flash-preview
+    backend: claude
+    model: anthropic/claude-opus-4-6
     temperature: 0.9  # More creative/challenging
 
 
