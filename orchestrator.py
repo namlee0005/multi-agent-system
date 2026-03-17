@@ -105,6 +105,14 @@ class Orchestrator:
         self.min_agents = self.debate_config.get("min_agents", 3)
         self.max_agents = self.debate_config.get("max_agents", 5)
 
+        # Phase 3 — Task 3.1: Cache spec.md once at construction.
+        # Raises FileNotFoundError here if project_path is set but spec.md is missing.
+        self.spec_content = ""
+        if self.project_path:
+            spec_path = os.path.join(self.project_path, "spec.md")
+            with open(spec_path, "r") as f:
+                self.spec_content = f"\n\n## Current spec.md\n{f.read()}"
+
         self.planner = build_planner(config, project_path=project_path)
         self.all_agents = build_agents(config, project_path=project_path)
         self.all_agents['planner'] = self.planner
@@ -803,11 +811,15 @@ class Orchestrator:
         print_header("Multi-Agent Project Advisor")
         print(color(f"Project: {project_description}\n", "bold"))
 
+        # Phase 3 — Task 3.3: Enrich project_description with cached spec content.
+        spec_content = self.spec_content
+        enriched_description = project_description + spec_content
+
         # Step 1: Planner selects agents
-        selected = self._select_agents(project_description)
+        selected = self._select_agents(enriched_description)
 
         # Step 2: Round 1 — Initial proposals
-        round1 = self._run_round(selected, project_description, round_num=1, is_challenge_round=False)
+        round1 = self._run_round(selected, enriched_description, round_num=1, is_challenge_round=False)
         self.context.set("round1_proposals", round1)
 
         # Step 2b: Compression gate — compress Round 1 proposals before Round 2 agents see them.
@@ -815,11 +827,11 @@ class Orchestrator:
         self._compress_proposals(round1)
 
         # Step 3: Round 2 — Challenge/support round
-        round2 = self._run_round(selected, project_description, round_num=2, is_challenge_round=True)
+        round2 = self._run_round(selected, enriched_description, round_num=2, is_challenge_round=True)
         self.context.set("round2_proposals", round2)
 
         # Step 4: Planner synthesizes
-        synthesis = self._synthesize(project_description, round1, round2)
+        synthesis = self._synthesize(enriched_description, round1, round2)
 
         result = {
             "project_description": project_description,
@@ -838,12 +850,8 @@ class Orchestrator:
             print(f"Error: Agent '{agent_name}' not found.", file=sys.stderr)
             sys.exit(1)
 
-        spec_content = ""
-        if self.project_path:
-            spec_path = os.path.join(self.project_path, "spec.md")
-            if os.path.exists(spec_path):
-                with open(spec_path, "r") as f:
-                    spec_content = f"\n\n## Current spec.md\n{f.read()}"
+        # Phase 3 — Task 3.2: Use cached self.spec_content; no per-call file read.
+        spec_content = self.spec_content
 
         agent = self.all_agents[agent_name]
         print_agent_header(agent.name, f"Task: {task_name}")
