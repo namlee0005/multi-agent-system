@@ -9,6 +9,8 @@ import re
 import threading
 
 from rate_limiter import RateLimiter
+from backends.session_store import SessionStore
+from backends.cli_session import CLISession
 
 # Module-level rate limiter shared across all agents
 _rate_limiter = RateLimiter()
@@ -27,6 +29,7 @@ class Agent:
     backend: str = "claude"
     model: str = "claude-sonnet-4-6"
     temperature: float = 0.7
+    session_store: Optional[SessionStore] = None
 
     def build_prompt(self, user_request: str, context: dict) -> str:
         """Build the full prompt with system context and shared memory."""
@@ -54,68 +57,54 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
         return prompt
 
     def call_llm(self, prompt: str, backend_config: dict) -> str:
-        """Call the configured LLM backend via subprocess and log the interaction."""
+        """Call the configured LLM backend via CLISession with session persistence."""
         import datetime
-        import os
-        import subprocess
+        import time
 
         backend = self.backend
         cfg = backend_config.get(backend, {})
         command = cfg.get("command", "claude")
-        args = cfg.get("args", ["--print"])
         
-        resolved_args = [
-            a.replace("{model}", self.model) for a in args
-        ]
-        cmd = [command] + resolved_args
+        # Instantiate CLISession
+        session = CLISession(
+            backend=backend,
+            agent_name=self.name,
+            project_path=self.project_path or ".",
+            command=command,
+            model=self.model,
+            session_store=self.session_store or SessionStore()
+        )
         
         # Acquire rate limit token before call
         _rate_limiter.acquire(backend)
 
+        start_time = time.monotonic()
+        result = session.call(prompt)
+        duration = time.monotonic() - start_time
+
+        # Logging logic
         timestamp = datetime.datetime.now().isoformat()
         log_file_path = "logs/cli_calls.log"
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
         
         log_entry = f"--- TIMESTAMP: {timestamp} ---\n"
         log_entry += f"Agent: {self.name} (Model: {self.model})\n"
-        log_entry += f"Command: {' '.join(cmd)}\n"
-
-        try:
-            result = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            
-            if result.returncode != 0:
-                stderr = result.stderr.strip()
-                log_entry += f"Status: ERROR\n"
-                log_entry += f"Stderr: {stderr}\n\n"
-                with _log_file_lock:
-                    with open(log_file_path, "a") as f:
-                        f.write(log_entry)
-                raise RuntimeError(
-                    f"Backend '{backend}' exited {result.returncode}: {stderr}"
-                )
-            
-            stdout = result.stdout.strip()
-            log_entry += f"Status: SUCCESS\n"
-            log_entry += f"Output (first 100 chars): {stdout[:100].strip()}...\n\n"
+        log_entry += f"Session ID: {result.session_id or 'None'} (Resumed: {result.is_resumed})\n"
+        log_entry += f"Status: {'SUCCESS' if result.returncode == 0 else 'ERROR'}\n"
+        
+        if result.returncode != 0:
+            log_entry += f"Stderr: {result.content[:500]}\n\n"
             with _log_file_lock:
                 with open(log_file_path, "a") as f:
                     f.write(log_entry)
-            return stdout
+            raise RuntimeError(f"Backend '{backend}' exited {result.returncode}: {result.content}")
             
-        except Exception as e:
-            log_entry += f"Status: FATAL_ERROR\n"
-            log_entry += f"Error: {str(e)}\n\n"
-            with _log_file_lock:
-                with open(log_file_path, "a") as f:
-                    f.write(log_entry)
-            raise e
-
+        log_entry += f"Output (first 100 chars): {result.content[:100].strip()}...\n\n"
+        with _log_file_lock:
+            with open(log_file_path, "a") as f:
+                f.write(log_entry)
+                
+        return result.content
     def respond(self, user_request: str, context: dict, backend_config: dict, project_path: Optional[str] = None) -> str:
         """Generate a response given the current context, potentially writing to a file."""
         self.project_path = project_path
@@ -387,16 +376,19 @@ AGENT_FACTORIES = {
     "code_reviewer": make_code_reviewer,
 }
 
-def build_agents(config: dict, project_path: Optional[str] = None) -> dict[str, Agent]:
+def build_agents(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> dict[str, Agent]:
     """Build all specialist agents from config."""
     agent_configs = config.get("agents", {})
     agents = {}
     for key, factory in AGENT_FACTORIES.items():
         agent_cfg = agent_configs.get(key, config.get("defaults", {}))
         agents[key] = factory(agent_cfg, project_path=project_path)
+        agents[key].session_store = session_store
     return agents
 
-def build_planner(config: dict, project_path: Optional[str] = None) -> Agent:
+def build_planner(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> Agent:
     """Build the planner/moderator agent from config."""
     planner_cfg = config.get("agents", {}).get("planner", config.get("defaults", {}))
-    return make_planner(planner_cfg, project_path=project_path)
+    planner = make_planner(planner_cfg, project_path=project_path)
+    planner.session_store = session_store
+    return planner

@@ -27,3 +27,4 @@ realtime-chat-app/
 
 # Environment
 .env
+.mas/

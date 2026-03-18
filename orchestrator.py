@@ -7,10 +7,11 @@ import re
 import sys
 import threading
 import time
-import uuid
+import uuid, shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from agents import Agent, build_agents, build_planner
+from backends.session_store import SessionStore
 from context_store import ContextStore
 from validator import validate_response
 
@@ -100,6 +101,12 @@ class Orchestrator:
         self.project_path = project_path
         self.skip_review = skip_review
         self.backend_config = config.get("backends", {})
+        # Task 6.2: Validate CLI binaries at init
+        for backend, cfg in self.backend_config.items():
+            cmd = cfg.get("command", "claude")
+            if not shutil.which(cmd) and not os.path.isfile(cmd):
+                raise RuntimeError(f"Backend binary not found: {cmd!r}")
+
         self.debate_config = config.get("debate", {})
         self.max_rounds = self.debate_config.get("max_rounds", 2)
         self.min_agents = self.debate_config.get("min_agents", 3)
@@ -113,8 +120,10 @@ class Orchestrator:
             with open(spec_path, "r") as f:
                 self.spec_content = f"\n\n## Current spec.md\n{f.read()}"
 
-        self.planner = build_planner(config, project_path=project_path)
-        self.all_agents = build_agents(config, project_path=project_path)
+        self.session_store = SessionStore()
+        self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        self.planner = build_planner(config, project_path=project_path, session_store=self.session_store)
+        self.all_agents = build_agents(config, project_path=project_path, session_store=self.session_store)
         self.all_agents['planner'] = self.planner
 
         # Skills loaded once at init; keyed by agent display name (e.g. "BackendDev")
@@ -127,7 +136,9 @@ class Orchestrator:
         self._log_lock = threading.Lock()
 
         # Session tracking
-        self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        
+        # Phase 6: Session tracking and persistence
+
         self.session_log: dict = {
             "session_id": self.session_id,
             "start_time": datetime.datetime.utcnow().isoformat() + "Z",
@@ -842,6 +853,7 @@ class Orchestrator:
         }
 
         self._write_session_log()
+        self.session_store.invalidate(self.project_path)
         return result
 
     def run_agent(self, agent_name: str, task_name: str, project_description: str):
