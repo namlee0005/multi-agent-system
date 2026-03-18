@@ -82,26 +82,38 @@ env.pop("CLAUDECODE", None)
 subprocess.run([...], env=env, ...)
 ```
 
-This is enforced in `CLISession.call()`, not in a wrapper. It is non-negotiable.
+This is enforced in `CLISession._get_env()`. It is non-negotiable and applies to every `subprocess.run()` call including retries.
 
 ### 5.5 Binary Validation
 
-CLI binary availability is validated at `Orchestrator.__init__` via `shutil.which()`. Missing binaries raise `RuntimeError` immediately — not on first agent call 30 seconds into a session.
+CLI binary availability is validated at `Orchestrator.__init__` via `shutil.which()`. Missing binaries raise `BinaryNotFoundError` immediately — not on first agent call 30 seconds into a session.
 
 ### 5.6 Failure Mode Contract
 
 | Failure | Response |
 |---|---|
-| Binary not found at init | `RuntimeError` — fail fast |
+| Binary not found at init | `BinaryNotFoundError` — fail fast |
 | Session ID extraction failure | `session_id=None` → stateless fallback, log warning |
 | `--resume` returns non-zero | Retry once without `--resume`; clear session_id |
 | Gemini race condition | Stateless by design; no retry needed |
 
 ### 5.7 Observability
 
-`CLICallResult` includes `session_id: str | None`, `is_resumed: bool`, `duration_s: float`. Both fields are logged in `logs/session-{id}.json` per agent call. Operators can verify `--resume` is actually being used by inspecting `is_resumed` in session logs.
+`CLICallResult` includes `session_id: str | None`, `is_resumed: bool`, `duration_s: float`, `input_tokens: int | None`, `output_tokens: int | None`. All fields are logged in `logs/session-{id}.json` per agent call. Operators verify `--resume` is active by inspecting `is_resumed` in session logs.
 
-### 5.8 Estimated Token Savings
+### 5.8 Token ROI Accounting
+
+Claude JSON output includes multiple token fields for cached inputs. All three are summed to produce the canonical `input_tokens` value:
+
+```python
+input_tokens = (
+    raw["input_tokens"]
+    + raw.get("cache_read_input_tokens", 0)
+    + raw.get("cache_creation_input_tokens", 0)
+)
+```
+
+**Token savings summary:**
 
 | Mechanism | Savings |
 |---|---|
@@ -202,3 +214,66 @@ Phase 4 (SDK + prompt caching) was implemented and then reverted. The active cod
 - `cache_control: ephemeral` prompt caching (~40% savings on static blocks) is not available via CLI
 
 **Decision:** Accept the caching regression. Measure the `--resume` token savings in Phase 6 benchmarks. If net token cost increases materially, re-evaluate SDK path as a feature flag.
+
+---
+
+## 8. Hardened Error Taxonomy (Phase 8)
+
+All MAS exceptions inherit from both `MASError(RuntimeError)` and the appropriate subclass. This preserves backward compatibility with existing `except RuntimeError` catch sites while enabling MAS-specific handling.
+
+```
+MASError(RuntimeError)
+  ├─ BinaryNotFoundError      — CLI binary missing at Orchestrator.__init__
+  ├─ SessionError             — subprocess call failure
+  │    └─ SessionResumeError  — --resume retry exhausted
+  ├─ BackendCallError         — LLM backend non-zero exit
+  ├─ ValidationError          — agent response validation exhausted (3 retries)
+  ├─ ReviewError              — CodeReviewer returns FAIL after retries
+  ├─ PipelineError            — >50% agents fail in a debate round
+  └─ CompressionError         — compression gate produces no summaries
+```
+
+**Design invariant:** Every new exception type must subclass an existing node in this tree. No exception may directly subclass `Exception` or `RuntimeError` — only `MASError` or one of its descendants.
+
+### 8.1 Session Log Integrity
+
+At `Orchestrator.__init__`, the previous session log is inspected for a missing `end_time`. If absent, a warning is logged (process was killed mid-run). This is observability only — it does not block the new session.
+
+Every session log entry includes:
+```json
+{
+  "agent": "Architect",
+  "backend": "claude",
+  "round": 1,
+  "status": "success",
+  "duration_s": 12.4,
+  "input_tokens": 1820,
+  "output_tokens": 743,
+  "retry_count": 0,
+  "is_resumed": true,
+  "skills_injected": true
+}
+```
+
+### 8.2 Regression Coverage
+
+| Test Class | What It Validates |
+|------------|------------------|
+| `TestExceptionHierarchy` | All subclasses inherit `MASError + RuntimeError`; `SessionResumeError` is a `SessionError` |
+| `TestContextStore` | Scalar r/w, list append, snapshot isolation, key filtering, 10-thread / 500-item concurrent append |
+| `TestCLISessionParsing` | JSON result extraction, plain token count, cache field summing, non-JSON fallback, non-zero returncode |
+| `TestAgentBackendCallError` | `BackendCallError` raised on non-zero; success path returns content |
+| `TestOrchestratorBinaryCheck` | `BinaryNotFoundError` for missing binaries; no error for present commands |
+| `TestGetEnv` / `TestSubprocessEnvStripping` | `CLAUDECODE` absent from every subprocess call including retries |
+
+---
+
+## 9. Additive Documentation Rule
+
+All changes to this specification, `README.md`, agent skills, exception hierarchy, context snapshot key sets, and session log schema **must be additive**:
+
+- **Preserve:** existing phase sections are never removed or renamed
+- **Append:** new phases and decisions are added as new numbered sections
+- **No silent rewrites:** if a decision is reversed (e.g., Phase 4 → Phase 6), the reversal is recorded with explicit rationale rather than overwriting
+
+This rule exists because session logs, test suites, and operator runbooks reference section numbers and field names by value. Silent rewrites create divergence between live behavior and historical records.

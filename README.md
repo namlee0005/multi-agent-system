@@ -1,141 +1,96 @@
+# Multi-Agent System (MAS)
 
-# Multi-Agent Project Advisor
+A debate-driven technical advisory framework where specialized AI agents propose, challenge, and synthesize recommendations in parallel — producing well-reasoned architecture decisions with built-in adversarial review.
 
-A debate-driven technical advisory system where specialized AI agents discuss and challenge each other to produce well-reasoned project recommendations.
+## Features
+
+- **Parallel Debate** — Round agents run concurrently via `ThreadPoolExecutor`; no sequential bottleneck
+- **CLI Session Persistence** — Each agent resumes its own server-side context across rounds via `--resume`, cutting repeated-context token costs by ~20–40%
+- **Compression Gate** — Round 1 proposals are compressed before Round 2; ~60–70% token reduction on challenge inputs
+- **Skill Injection** — Per-agent `SKILL.md` files inject role-specific behavioral constraints without polluting core personas
+- **Hardened Reliability** — Structured exception hierarchy, fail-fast binary validation, session log integrity checks, and a regression suite covering concurrency and error paths
+- **Artifact Gate** — `<write_file>` outputs are reviewed by a dedicated `CodeReviewer` agent (PASS/WARN/FAIL) before being written to disk
+- **Multi-Backend** — Runs against Claude CLI, Gemini CLI, or any CLI-exposed model; mixed backends per agent supported
 
 ## How It Works
 
 ```
 User Request
     ↓
-Planner analyzes → selects 3-5 relevant agents
+Planner → selects 3–5 relevant specialist agents
     ↓
-Round 1: Each agent proposes their perspective
+Round 1 (parallel) — each agent proposes their perspective
     ↓
-Round 2: Agents challenge/support each other's proposals
+Compression Gate — proposals compressed to bullet summaries
     ↓
-Planner synthesizes → Final recommendation (saved as markdown)
+Round 2 (parallel) — agents challenge and refine
+    ↓
+Synthesis — Planner integrates all views → final recommendation
+    ↓
+Artifact Gate — any generated files reviewed by CodeReviewer
+    ↓
+report_*.md saved to disk
 ```
 
 ## Agents
 
-| Agent | Role |
-|-------|------|
-| **Planner** | Moderator — selects agents, synthesizes final output |
-| **Researcher** | Best practices, similar projects, evidence-based evaluation |
-| **Architect** | System design, scalability, patterns |
-| **BackendDev** | Backend stack, APIs, databases, real-time data |
-| **FrontendDev** | UI frameworks, state management, charts/viz |
-| **DevOps** | Deployment, infra, CI/CD, monitoring |
-| **Security** | Threat modeling, auth, vulnerabilities |
-| **Skeptic** | Devil's advocate — challenges all proposals |
+| Agent | Role | Temperature |
+|-------|------|-------------|
+| **Planner** | Moderator — selects agents, synthesizes output | 0.5 |
+| **Researcher** | Evidence synthesis, real-world precedents | 0.7 |
+| **Architect** | System design, data models, service boundaries | 0.7 |
+| **BackendDev** | Language/framework/database selection | 0.8 |
+| **FrontendDev** | UI framework, accessibility, bundle strategy | 0.8 |
+| **DevOps** | Deployment, CI/CD, cost, observability | 0.7 |
+| **Security** | Threat modeling, OWASP, auth/authz | 0.6 |
+| **Skeptic** | Devil's advocate — surfaces hidden assumptions | 0.9 |
+| **CodeReviewer** | Artifact gate — PASS/WARN/FAIL on generated files | 0.3 |
 
 ## Installation
 
 ```bash
-pip install pyyaml pytest
+pip install pyyaml pytest tiktoken
 ```
 
-You also need at least one LLM backend CLI installed:
+At least one LLM backend CLI is required:
 
 ```bash
-# Option A: Claude CLI (recommended)
+# Claude CLI (recommended)
 npm install -g @anthropic-ai/claude-code
-# or: pip install claude-cli
 
-# Option B: Gemini CLI
+# Gemini CLI
 npm install -g @google/generative-ai-cli
-
-# Option C: OpenAI CLI
-pip install openai
 ```
 
 ## Usage
 
 ```bash
-# Basic usage
+# Full debate
 python main.py "Build a crypto dashboard with BTC/ETH prices and Polymarket events"
 
-# With custom output file
-python main.py "Build a real-time chat app" --output chat_report.md
+# With target project directory (enables file artifact writes)
+python main.py "Build a real-time chat app" --project-path /path/to/project
 
-# Quiet mode (suppress per-agent output, show summary only)
+# Quiet mode (suppress per-agent output)
 python main.py "Build a SaaS invoicing app" --quiet
 
-# Custom config
-python main.py "Build an ML pipeline" --config my_config.yaml
+# Continue after human review (write spec.md + tasks.md)
+python main.py "..." --mode continue --project-path /path --output report.md
 
-# Don't save to file
-python main.py "Build a blog" --no-save
-```
+# Single agent, single task
+python main.py "..." --mode agent --agent architect --task write_tasks_md --project-path /path
 
-## Testing
+# Headless + JSON output (scripting)
+python main.py "..." --headless --format json
 
-The test suite covers `validator`, `rate_limiter`, and `context_store` with unit and concurrency tests.
-
-### Run all tests
-
-```bash
-pytest tests/
-```
-
-### Run a specific module
-
-```bash
-pytest tests/test_validator.py
-pytest tests/test_rate_limiter.py
-pytest tests/test_context_store.py
-```
-
-### Verbose output
-
-```bash
-pytest tests/ -v
-```
-
-### Run with coverage (requires `pytest-cov`)
-
-```bash
-pip install pytest-cov
-pytest tests/ --cov=. --cov-report=term-missing
-```
-
-### What each suite tests
-
-| File | Module | Focus |
-|------|--------|-------|
-| `tests/test_validator.py` | `validator.py` | Good/bad response detection: empty, too short, malformed JSON, mismatched `<write_file>` tags, truncation patterns |
-| `tests/test_rate_limiter.py` | `rate_limiter.py` | Token bucket drain/refill rate, rpm cap, per-backend isolation, thread safety |
-| `tests/test_context_store.py` | `context_store.py` | Scalar get/set, list append, snapshot isolation, 100-thread concurrent append correctness |
-
-## Project Bootstrapping
-
-After the planner has run and a satisfactory plan has been generated, you can bootstrap a new, clean project structure using the provided template.
-
-A project template (`base-project/`) and creation script (`create_project.sh`) are included in this repository.
-
-### Usage
-
-To create a new project structure, run the `create_project.sh` script from within the `multi-agent-system` directory:
-
-```bash
-./create_project.sh <your-new-project-name>
-```
-
-By default, this will create a new project directory inside a `projects/` folder in the workspace root.
-
-### Custom Project Directory (Optional)
-
-You can control the output location by setting the `PROJECTS_DIR` environment variable before running the script.
-
-```bash
-export PROJECTS_DIR=/path/to/your/projects
-./create_project.sh <your-new-project-name>
+# Skip CodeReviewer gate
+python main.py "..." --skip-review
 ```
 
 ## Output
 
-Each run saves a markdown report with:
+Each run saves a markdown report:
+
 - **Executive Summary**
 - **Recommended Tech Stack** (with reasoning)
 - **Architecture Overview** (with diagrams)
@@ -145,88 +100,112 @@ Each run saves a markdown report with:
 
 Reports are auto-named: `report_build_a_crypto_20240315_143022.md`
 
+## Project Bootstrapping
+
+After a satisfactory plan is generated, bootstrap a clean project structure:
+
+```bash
+./create_project.sh <your-new-project-name>
+
+# Custom output location
+export PROJECTS_DIR=/path/to/your/projects
+./create_project.sh <your-new-project-name>
+```
+
 ## Configuration (`config.yaml`)
 
 ```yaml
 defaults:
-  backend: claude        # claude | gemini | openai
+  backend: claude
   model: claude-sonnet-4-6
   temperature: 0.7
 
 agents:
   planner:
-    backend: claude
-    model: claude-sonnet-4-6
-    temperature: 0.5    # Lower = more deterministic
-
+    temperature: 0.5      # deterministic for JSON selection output
   skeptic:
-    backend: claude
-    model: claude-sonnet-4-6
-    temperature: 0.9    # Higher = more creative challenges
+    temperature: 0.9      # creative challenges
+  code_reviewer:
+    temperature: 0.3      # deterministic PASS/WARN/FAIL
 
-# Mix backends per agent
+  # Mix backends per agent
   researcher:
     backend: gemini
     model: gemini-2.0-flash
 
-  architect:
-    backend: openai
-    model: gpt-4o
+backends:
+  claude:
+    command: /path/to/claude
+    args: ["--print", "--permission-mode", "bypassPermissions"]
+  gemini:
+    command: gemini
+    args: ["-m", "{model}", "--yolo"]
+
+debate:
+  max_rounds: 2
+  min_agents: 3
+  max_agents: 5
+
+cli_timeout_s: 120
 ```
 
-### Supported Backends
+## Testing
 
-| Backend | CLI Command | Notes |
-|---------|-------------|-------|
-| `claude` | `claude --print` | Input via stdin |
-| `gemini` | `gemini --yolo` | Input via stdin |
-| `openai` | `openai api chat.completions.create` | Input via stdin |
-
-## Examples
-
-### Crypto Dashboard
 ```bash
-python main.py "Build a crypto dashboard with BTC/ETH prices and Polymarket events"
+# Full regression suite (exception hierarchy, context store, CLI parsing, binary check)
+pytest tests/regression_suite.py -v
+
+# CLAUDECODE environment stripping audit
+pytest tests/test_env_stripping.py -v
+
+# All tests
+pytest tests/ -v
+
+# Skills token linter (≤200 tokens per SKILL.md)
+python scripts/lint_skills.py
+
+# With coverage
+pip install pytest-cov
+pytest tests/ --cov=. --cov-report=term-missing
 ```
 
-### SaaS App
-```bash
-python main.py "Build a B2B invoicing SaaS with multi-tenant support, Stripe billing, and PDF generation"
-```
+| Test Suite | Covers |
+|------------|--------|
+| `regression_suite.py` | Exception hierarchy, ContextStore concurrency (500-item 10-thread), CLI JSON parsing + cache summing, binary validation |
+| `test_env_stripping.py` | `CLAUDECODE` absent from every `subprocess.run()` call, including retries |
+| `test_validator.py` | Empty/short/malformed JSON/mismatched `<write_file>` tags/truncation patterns |
+| `test_rate_limiter.py` | Token bucket drain/refill, per-backend isolation, thread safety |
+| `test_context_store.py` | Scalar get/set, list append, snapshot isolation, concurrent correctness |
 
-### ML System
-```bash
-python main.py "Build an ML pipeline for real-time fraud detection processing 10k transactions/second"
-```
-
-### Game Backend
-```bash
-python main.py "Build a real-time multiplayer game server for a 2D battle royale with 100 players per match"
-```
-
-## Architecture
+## Module Map
 
 ```
-main.py          CLI entry point, argument parsing, report saving
-orchestrator.py  Debate flow: agent selection → rounds → synthesis
-agents.py        Agent class definitions, LLM backend calls
-config.yaml      Model assignments, backend configuration
-validator.py     Response quality checks (length, JSON, write_file tags, truncation)
-rate_limiter.py  Per-backend token bucket rate limiting (thread-safe)
-context_store.py Shared RLock-protected key/value store for debate state
+main.py              CLI entry point, argument parsing, mode dispatch
+orchestrator.py      Debate flow: selection → rounds → compression → synthesis → artifact gate
+agents.py            Agent dataclass, factory functions, LLM backend dispatch
+backends/
+  cli_session.py     subprocess wrapper, --resume logic, CLAUDECODE stripping
+  session_store.py   CLICallResult dataclass, session UUID persistence (.mas/sessions.json)
+context_store.py     RLock-protected shared debate state (ContextStore)
+exceptions.py        MASError hierarchy (BinaryNotFoundError, SessionError, PipelineError, ...)
+validator.py         Response quality checks
+rate_limiter.py      Per-backend token bucket rate limiting
+health_check.py      Startup/deployment verification
+skills/              Per-agent SKILL.md behavioral constraints (≤200 tokens each)
+scripts/
+  lint_skills.py     CI token cap enforcement (tiktoken cl100k_base)
 ```
-
-The `Orchestrator` maintains a shared `context` dict that grows as debate progresses. Each agent receives:
-- The project description
-- Previous agents' proposals (in round 2)
-- Their specialized system prompt
 
 ## Troubleshooting
 
-**"Backend command not found"**: Install the relevant CLI tool (see Installation above).
+**`BinaryNotFoundError` at startup** — Install the configured CLI backend (see Installation). Binary is validated at `Orchestrator.__init__`, not lazily.
 
-**Agents timing out**: Increase the timeout in `agents.py` (`timeout=120`), or switch to a faster model.
+**Agents timing out** — Increase `cli_timeout_s` in `config.yaml` (default: 120s), or switch to a faster model.
 
-**Poor agent selection**: The Planner couldn't parse its own JSON output. Edit `config.yaml` to lower the Planner's temperature to 0.3.
+**`CLAUDECODE` nested session error** — This is handled automatically. All subprocess calls strip the `CLAUDECODE` env var. If you see this error, check that you're running via `main.py` and not calling `CLISession` directly without `_get_env()`.
 
-**Rate limit errors**: Add `time.sleep(2)` between agent calls in `orchestrator.py:_run_round()`.
+**Poor agent selection** — Lower the Planner's temperature to 0.3 in `config.yaml`. The Planner outputs JSON; high temperature causes parse failures.
+
+**Rate limit errors** — Reduce `rpm` values in `config.yaml` under `rate_limiter`, or add delays between sessions.
+
+**Previous session integrity warning** — A prior session log is missing `end_time`, indicating the process was killed mid-run. This is a warning only; the new session proceeds normally.
