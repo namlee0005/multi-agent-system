@@ -19,6 +19,8 @@ class CLICallResult:
     returncode: int = 0
     is_resumed: bool = False
     duration_s: float = 0.0
+    input_tokens: Optional[int] = None
+    output_tokens: Optional[int] = None
 
 class SessionStore:
     """Manages persistence of CLI session IDs across agent runs."""

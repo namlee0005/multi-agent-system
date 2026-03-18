@@ -11,6 +11,7 @@ import threading
 from rate_limiter import RateLimiter
 from backends.session_store import SessionStore
 from backends.cli_session import CLISession
+from exceptions import BackendCallError
 
 # Module-level rate limiter shared across all agents
 _rate_limiter = RateLimiter()
@@ -97,7 +98,7 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
             with _log_file_lock:
                 with open(log_file_path, "a") as f:
                     f.write(log_entry)
-            raise RuntimeError(f"Backend '{backend}' exited {result.returncode}: {result.content}")
+            raise BackendCallError(f"Backend '{backend}' exited {result.returncode}: {result.content}")
             
         log_entry += f"Output (first 100 chars): {result.content[:100].strip()}...\n\n"
         with _log_file_lock:

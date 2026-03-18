@@ -44,6 +44,18 @@ class CLISession:
         start_time = time.monotonic()
         is_resumed = False
         session_id = self.session_store.get(self.backend, self.agent_name, self.project_path)
+
+        # Gemini is stateless by design — '--resume latest' is unsafe under
+        # ThreadPoolExecutor (concurrent threads race to resume "latest" and
+        # cross-contaminate sessions). Any session_id stored for a Gemini backend
+        # is a bug; fail loudly rather than silently resuming.
+        if self.backend == "gemini":
+            assert session_id is None, (
+                f"Gemini backend must never carry a session_id, but found "
+                f"session_id={session_id!r} for agent '{self.agent_name}'. "
+                "Gemini runs stateless by design (spec §5.3). "
+                "Call SessionStore.invalidate() before retrying."
+            )
         
         # Prepare base command
         # Note: --output-format json ensures we get parseable session metadata
@@ -64,8 +76,14 @@ class CLISession:
                 session_id = str(uuid.uuid4())
                 cmd.extend(["--session-id", session_id])
                 # We'll persist this ID after a successful first call
-        
-        # Gemini logic: stateless by default as per spec (Task 6.3)
+
+        # Gemini logic: stateless by default as per spec (§5.3)
+        # No --resume flag is ever added. The assert above ensures session_id
+        # is None, so is_resumed remains False for the entire call.
+        assert not (self.backend == "gemini" and is_resumed), (
+            "Gemini backend reached is_resumed=True — this is a logic error. "
+            "Gemini must never attempt session resumption."
+        )
 
         try:
             # We need to capture the raw stdout for JSON parsing
@@ -93,16 +111,28 @@ class CLISession:
                     duration_s=duration
                 )
             
-            # Parse content and session_id from JSON output
+            # Parse content, session_id, and token usage from JSON output
             stdout_raw = res.stdout.strip()
             content = stdout_raw
             extracted_id = session_id
+            input_tokens: Optional[int] = None
+            output_tokens: Optional[int] = None
 
             try:
                 data = json.loads(stdout_raw)
                 # Handle nested result field in Claude Code JSON output
                 content = data.get("result", data.get("text", data.get("content", stdout_raw)))
                 extracted_id = data.get("session_id", session_id)
+                # Extract token usage from the 'usage' block (Claude CLI JSON output).
+                # Resumed sessions report context via cache_read_input_tokens, not
+                # input_tokens — sum all three fields to get true total context size.
+                usage = data.get("usage", {})
+                if usage:
+                    raw_input = usage.get("input_tokens") or 0
+                    cache_read = usage.get("cache_read_input_tokens") or 0
+                    cache_creation = usage.get("cache_creation_input_tokens") or 0
+                    input_tokens = raw_input + cache_read + cache_creation
+                    output_tokens = usage.get("output_tokens")
             except json.JSONDecodeError:
                 pass
 
@@ -115,7 +145,9 @@ class CLISession:
                 session_id=extracted_id,
                 returncode=0,
                 is_resumed=is_resumed,
-                duration_s=duration
+                duration_s=duration,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
         except Exception as e:
