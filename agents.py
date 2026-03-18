@@ -367,14 +367,14 @@ Be brief and highly critical. If the status is FAIL, provide a clear suggestion 
 # ─── Factory ──────────────────────────────────────────────────────────────────
 
 AGENT_FACTORIES = {
-    "researcher": make_researcher,
-    "architect": make_architect,
-    "backend_dev": make_backend_dev,
-    "frontend_dev": make_frontend_dev,
-    "devops": make_devops,
-    "security": make_security,
-    "skeptic": make_skeptic,
-    "code_reviewer": make_code_reviewer,
+    "Researcher": make_researcher,
+    "Architect": make_architect,
+    "BackendDev": make_backend_dev,
+    "FrontendDev": make_frontend_dev,
+    "DevOps": make_devops,
+    "Security": make_security,
+    "Skeptic": make_skeptic,
+    "CodeReviewer": make_code_reviewer,
 }
 
 def build_agents(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> dict[str, Agent]:
@@ -389,7 +389,7 @@ def build_agents(config: dict, project_path: Optional[str] = None, session_store
 
 def build_planner(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> Agent:
     """Build the planner/moderator agent from config."""
-    planner_cfg = config.get("agents", {}).get("planner", config.get("defaults", {}))
+    planner_cfg = config.get("agents", {}).get("Planner", config.get("defaults", {}))
     planner = make_planner(planner_cfg, project_path=project_path)
     planner.session_store = session_store
     return planner

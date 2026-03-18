@@ -126,7 +126,7 @@ class Orchestrator:
         self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.planner = build_planner(config, project_path=project_path, session_store=self.session_store)
         self.all_agents = build_agents(config, project_path=project_path, session_store=self.session_store)
-        self.all_agents['planner'] = self.planner
+        self.all_agents['Planner'] = self.planner
 
         self.agent_skills: dict[str, str] = self._load_skills()
         self.context = ContextStore()
@@ -236,12 +236,12 @@ class Orchestrator:
     # ─── Pre-write artifact gate ───────────────────────────────────────────────
 
     def _review_artifact(self, artifact_response: str, original_request: str) -> tuple[bool, str]:
-        if "code_reviewer" not in self.all_agents:
+        if "CodeReviewer" not in self.all_agents:
             with self._log_lock:
                 print_status(color("⚠ code_reviewer agent not found — skipping artifact gate", "yellow"))
             return True, ""
 
-        reviewer = self.all_agents["code_reviewer"]
+        reviewer = self.all_agents["CodeReviewer"]
 
         review_request = (
             "You are reviewing a proposed file artifact before it is written to disk.\n\n"
@@ -573,8 +573,8 @@ class Orchestrator:
         selection_request = (
             f"Analyze this project and select the 3-5 most relevant specialist agents.\n\n"
             f"Project: {project_description}\n\n"
-            f"Available agents: researcher, architect, backend_dev, frontend_dev, devops, security, skeptic\n\n"
-            f"Output ONLY a JSON object: {{\"selected_agents\": [\"agent1\", \"agent2\", ...]}}"
+            f"Available agents: Researcher, Architect, BackendDev, FrontendDev, DevOps, Security, Skeptic\n\n"
+            f"Output ONLY a JSON object: {{\"selected_agents\": [\"Agent1\", \"Agent2\", ...]}}"
         )
 
         self.context.set("project_description", project_description)
@@ -591,11 +591,11 @@ class Orchestrator:
         valid = [a for a in selected if a in self.all_agents]
         if not valid:
             print_status("Could not parse agent selection, using defaults.")
-            valid = ["researcher", "architect", "backend_dev", "devops"]
+            valid = ["Researcher", "Architect", "BackendDev", "DevOps"]
 
         valid = valid[: self.max_agents]
         if len(valid) < self.min_agents:
-            for fallback in ["researcher", "architect", "backend_dev"]:
+            for fallback in ["Researcher", "Architect", "BackendDev"]:
                 if fallback not in valid:
                     valid.append(fallback)
                 if len(valid) >= self.min_agents:
@@ -613,8 +613,9 @@ class Orchestrator:
             except json.JSONDecodeError:
                 pass
 
-        known = ["researcher", "architect", "backend_dev", "frontend_dev", "devops", "security", "skeptic"]
-        found = [a for a in known if a in response.lower()]
+        known = ["Researcher", "Architect", "BackendDev", "FrontendDev", "DevOps", "Security", "Skeptic"]
+        response_lower = response.lower()
+        found = [a for a in known if a.lower() in response_lower]
         return found
 
     # ─── Debate rounds ────────────────────────────────────────────────────────
@@ -821,6 +822,12 @@ class Orchestrator:
         return result
 
     def run_agent(self, agent_name: str, task_name: str, project_description: str):
+        # Normalize to PascalCase for user convenience (e.g. "backenddev" → "BackendDev")
+        if agent_name not in self.all_agents:
+            name_lower = agent_name.lower()
+            match = next((k for k in self.all_agents if k.lower() == name_lower), None)
+            if match:
+                agent_name = match
         if agent_name not in self.all_agents:
             print(f"Error: Agent '{agent_name}' not found.", file=sys.stderr)
             sys.exit(1)

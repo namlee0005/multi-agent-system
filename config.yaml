@@ -1,33 +1,37 @@
 agents:
-  architect:
+  Architect:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.7
-  backend_dev:
+  BackendDev:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.8
-  devops:
+  CodeReviewer:
+    backend: claude
+    model: claude-sonnet-4-6
+    temperature: 0.3
+  DevOps:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.7
-  frontend_dev:
+  FrontendDev:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.8
-  planner:
+  Planner:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.5
-  researcher:
+  Researcher:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.7
-  security:
+  Security:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.6
-  skeptic:
+  Skeptic:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.9

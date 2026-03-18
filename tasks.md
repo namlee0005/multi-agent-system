@@ -19,6 +19,7 @@
 - [x] **8.2 — Session log integrity check:** Orchestrator now warns if the previous session was interrupted.
 - [x] **8.3 — Skill injection observability:** Surface `skills_injected: true/false` directly in CLI output summaries.
 - [x] **8.4 — Regression test suite:** Full end-to-end flow test covering all core components.
+- [x] **8.5 — Path Standardization & Root Cleanup:** Enforced `reports/` directory for all outputs and cleaned MAS root.
 
 ---
 
