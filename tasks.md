@@ -14,18 +14,11 @@
 - [x] **7.4 — --resume retry contract implementation:** Recursive retry with depth guard implemented.
 - [x] **7.5 — Benchmark gate (BLOCKING):** ROI analysis confirmed significant token savings via cache.
 - [x] **7.6 — CLICallResult completeness validation:** All observability fields (tokens, duration, resume) are logged.
+- [x] **7.7 — Skills token cap CI enforcement:** `scripts/lint_skills.py` integrated and verified using `tiktoken`.
 - [x] **8.1 — Structured error taxonomy:** Created `exceptions.py` with typed MASError hierarchy.
 - [x] **8.2 — Session log integrity check:** Orchestrator now warns if the previous session was interrupted.
 - [x] **8.3 — Skill injection observability:** Surface `skills_injected: true/false` directly in CLI output summaries.
 - [x] **8.4 — Regression test suite:** Full end-to-end flow test covering all core components.
-
----
-
-## Active
-
-### Phase 7: Correctness & Safety (Finalizing)
-
-- [ ] **7.7 — Skills token cap CI enforcement:** Integrate `scripts/lint_skills.py` into a required CI check (pending `tiktoken` installation).
 
 ---
 
