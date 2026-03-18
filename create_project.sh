@@ -28,6 +28,6 @@ fi
 echo "Đang tạo dự án mới: $PROJECT_NAME..."
 
 # Copy the entire template directory to the new project location
-cp -r "$TEMPLATE_DIR" "$TARGET_DIR"
+mkdir -p "$TARGET_DIR" && cp -r "$TEMPLATE_DIR/." "$TARGET_DIR"
 
 echo "Đã tạo thành công dự án '$PROJECT_NAME' tại thư mục: $TARGET_DIR"

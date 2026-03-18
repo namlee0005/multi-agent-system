@@ -192,7 +192,7 @@ Your focus:
 
 Be evidence-based. Avoid vague recommendations. When you don't know, say so.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="research.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -215,7 +215,7 @@ Your focus:
 
 Use ASCII diagrams when helpful. Be opinionated — recommend a specific architecture with justification.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="architecture.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="architecture.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -238,7 +238,7 @@ Your focus:
 
 Be specific. "Use FastAPI with Postgres" is better than "use a Python framework with a database".
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.py">print('hello')</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.py">print('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -261,7 +261,7 @@ Your focus:
 
 Be opinionated. Explain tradeoffs. Mention specific component libraries worth considering.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.js">console.log('hello')</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.js">console.log('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -285,7 +285,7 @@ Your focus:
 
 Be practical. A small project doesn't need Kubernetes. Right-size the infrastructure.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="docker-compose.yml">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="docker-compose.yml">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -308,7 +308,7 @@ Your focus:
 
 Be specific about actual threats, not generic security advice. Prioritize by likelihood and impact.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="security-policy.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="security-policy.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
