@@ -9,6 +9,9 @@ import re
 import threading
 
 from rate_limiter import RateLimiter
+from backends.session_store import SessionStore
+from backends.cli_session import CLISession
+from exceptions import BackendCallError
 
 # Module-level rate limiter shared across all agents
 _rate_limiter = RateLimiter()
@@ -27,6 +30,7 @@ class Agent:
     backend: str = "claude"
     model: str = "claude-sonnet-4-6"
     temperature: float = 0.7
+    session_store: Optional[SessionStore] = None
 
     def build_prompt(self, user_request: str, context: dict) -> str:
         """Build the full prompt with system context and shared memory."""
@@ -54,68 +58,54 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
         return prompt
 
     def call_llm(self, prompt: str, backend_config: dict) -> str:
-        """Call the configured LLM backend via subprocess and log the interaction."""
+        """Call the configured LLM backend via CLISession with session persistence."""
         import datetime
-        import os
-        import subprocess
+        import time
 
         backend = self.backend
         cfg = backend_config.get(backend, {})
         command = cfg.get("command", "claude")
-        args = cfg.get("args", ["--print"])
         
-        resolved_args = [
-            a.replace("{model}", self.model) for a in args
-        ]
-        cmd = [command] + resolved_args
+        # Instantiate CLISession
+        session = CLISession(
+            backend=backend,
+            agent_name=self.name,
+            project_path=self.project_path or ".",
+            command=command,
+            model=self.model,
+            session_store=self.session_store or SessionStore()
+        )
         
         # Acquire rate limit token before call
         _rate_limiter.acquire(backend)
 
+        start_time = time.monotonic()
+        result = session.call(prompt)
+        duration = time.monotonic() - start_time
+
+        # Logging logic
         timestamp = datetime.datetime.now().isoformat()
         log_file_path = "logs/cli_calls.log"
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
         
         log_entry = f"--- TIMESTAMP: {timestamp} ---\n"
         log_entry += f"Agent: {self.name} (Model: {self.model})\n"
-        log_entry += f"Command: {' '.join(cmd)}\n"
-
-        try:
-            result = subprocess.run(
-                cmd,
-                input=prompt,
-                capture_output=True,
-                text=True,
-                timeout=600,
-            )
-            
-            if result.returncode != 0:
-                stderr = result.stderr.strip()
-                log_entry += f"Status: ERROR\n"
-                log_entry += f"Stderr: {stderr}\n\n"
-                with _log_file_lock:
-                    with open(log_file_path, "a") as f:
-                        f.write(log_entry)
-                raise RuntimeError(
-                    f"Backend '{backend}' exited {result.returncode}: {stderr}"
-                )
-            
-            stdout = result.stdout.strip()
-            log_entry += f"Status: SUCCESS\n"
-            log_entry += f"Output (first 100 chars): {stdout[:100].strip()}...\n\n"
+        log_entry += f"Session ID: {result.session_id or 'None'} (Resumed: {result.is_resumed})\n"
+        log_entry += f"Status: {'SUCCESS' if result.returncode == 0 else 'ERROR'}\n"
+        
+        if result.returncode != 0:
+            log_entry += f"Stderr: {result.content[:500]}\n\n"
             with _log_file_lock:
                 with open(log_file_path, "a") as f:
                     f.write(log_entry)
-            return stdout
+            raise BackendCallError(f"Backend '{backend}' exited {result.returncode}: {result.content}")
             
-        except Exception as e:
-            log_entry += f"Status: FATAL_ERROR\n"
-            log_entry += f"Error: {str(e)}\n\n"
-            with _log_file_lock:
-                with open(log_file_path, "a") as f:
-                    f.write(log_entry)
-            raise e
-
+        log_entry += f"Output (first 100 chars): {result.content[:100].strip()}...\n\n"
+        with _log_file_lock:
+            with open(log_file_path, "a") as f:
+                f.write(log_entry)
+                
+        return result.content
     def respond(self, user_request: str, context: dict, backend_config: dict, project_path: Optional[str] = None) -> str:
         """Generate a response given the current context, potentially writing to a file."""
         self.project_path = project_path
@@ -180,7 +170,9 @@ When synthesizing, produce a comprehensive markdown document with:
         When given the task "write_tasks_file", you must take the final synthesized plan from the context and extract the 'Implementation Phases' section. Format this as a single markdown file and wrap it in a <write_file path="tasks.md">...</write_file> tag.
 
         When instructed to write content to a file, use the format: <write_file path="FILENAME">CONTENT</write_file>
-For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>""",
+For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>
+
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths.""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -202,7 +194,7 @@ Your focus:
 
 Be evidence-based. Avoid vague recommendations. When you don't know, say so.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="research.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -225,7 +217,7 @@ Your focus:
 
 Use ASCII diagrams when helpful. Be opinionated — recommend a specific architecture with justification.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="architecture.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="architecture.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -248,7 +240,7 @@ Your focus:
 
 Be specific. "Use FastAPI with Postgres" is better than "use a Python framework with a database".
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.py">print('hello')</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.py">print('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -271,7 +263,7 @@ Your focus:
 
 Be opinionated. Explain tradeoffs. Mention specific component libraries worth considering.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.js">console.log('hello')</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="src/main.js">console.log('hello')</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -295,7 +287,7 @@ Your focus:
 
 Be practical. A small project doesn't need Kubernetes. Right-size the infrastructure.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="docker-compose.yml">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="docker-compose.yml">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -318,7 +310,7 @@ Your focus:
 
 Be specific about actual threats, not generic security advice. Prioritize by likelihood and impact.
 
-IMPORTANT: When implementing features or creating files, you MUST wrap the file content in a <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="security-policy.md">...</write_file>""",
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="security-policy.md">...</write_file>""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
@@ -377,26 +369,29 @@ Be brief and highly critical. If the status is FAIL, provide a clear suggestion 
 # ─── Factory ──────────────────────────────────────────────────────────────────
 
 AGENT_FACTORIES = {
-    "researcher": make_researcher,
-    "architect": make_architect,
-    "backend_dev": make_backend_dev,
-    "frontend_dev": make_frontend_dev,
-    "devops": make_devops,
-    "security": make_security,
-    "skeptic": make_skeptic,
-    "code_reviewer": make_code_reviewer,
+    "Researcher": make_researcher,
+    "Architect": make_architect,
+    "BackendDev": make_backend_dev,
+    "FrontendDev": make_frontend_dev,
+    "DevOps": make_devops,
+    "Security": make_security,
+    "Skeptic": make_skeptic,
+    "CodeReviewer": make_code_reviewer,
 }
 
-def build_agents(config: dict, project_path: Optional[str] = None) -> dict[str, Agent]:
+def build_agents(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> dict[str, Agent]:
     """Build all specialist agents from config."""
     agent_configs = config.get("agents", {})
     agents = {}
     for key, factory in AGENT_FACTORIES.items():
         agent_cfg = agent_configs.get(key, config.get("defaults", {}))
         agents[key] = factory(agent_cfg, project_path=project_path)
+        agents[key].session_store = session_store
     return agents
 
-def build_planner(config: dict, project_path: Optional[str] = None) -> Agent:
+def build_planner(config: dict, project_path: Optional[str] = None, session_store: Optional[SessionStore] = None) -> Agent:
     """Build the planner/moderator agent from config."""
-    planner_cfg = config.get("agents", {}).get("planner", config.get("defaults", {}))
-    return make_planner(planner_cfg, project_path=project_path)
+    planner_cfg = config.get("agents", {}).get("Planner", config.get("defaults", {}))
+    planner = make_planner(planner_cfg, project_path=project_path)
+    planner.session_store = session_store
+    return planner

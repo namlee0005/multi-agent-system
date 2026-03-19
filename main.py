@@ -18,6 +18,9 @@ import yaml
 
 from orchestrator import Orchestrator
 
+_REPORTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "reports")
+
+
 def build_markdown_report(result: dict) -> str:
     """Format the orchestrator output as a clean Markdown report."""
     md = f"# Multi-Agent Project Advisor Report\n\n"
@@ -59,11 +62,33 @@ def load_config(path: str) -> dict:
 
 
 def default_output_path(project_description: str) -> str:
-    """Generate a timestamped output filename from the project description."""
+    """Generate a timestamped output filename inside the reports/ directory."""
+    os.makedirs(_REPORTS_DIR, exist_ok=True)
     timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     slug = "_".join(project_description.lower().split()[:5])
     slug = "".join(c if c.isalnum() or c == "_" else "" for c in slug)
-    return f"report_{slug}_{timestamp}.md"
+    filename = f"report_{slug}_{timestamp}.md"
+    return os.path.join(_REPORTS_DIR, filename)
+
+
+def _safe_output_path(path: str) -> str:
+    """
+    Resolve the output path and ensure it stays inside reports/.
+    If a bare filename or relative path is given, anchor it to reports/.
+    Raises ValueError on path traversal attempts.
+    """
+    os.makedirs(_REPORTS_DIR, exist_ok=True)
+    # If the caller gave a plain filename or relative path, anchor to reports/
+    if not os.path.isabs(path):
+        path = os.path.join(_REPORTS_DIR, path)
+    resolved = os.path.realpath(path)
+    reports_real = os.path.realpath(_REPORTS_DIR)
+    if not resolved.startswith(reports_real + os.sep) and resolved != reports_real:
+        raise ValueError(
+            f"Output path '{path}' resolves outside reports/ ({resolved}). "
+            "Use a relative filename or a path inside reports/."
+        )
+    return resolved
 
 
 def parse_args():
@@ -95,7 +120,7 @@ Examples:
     )
     parser.add_argument(
         "--output", "-o",
-        help="Output markdown file path (default: auto-generated)",
+        help="Output filename (placed in reports/ if not absolute, default: auto-generated)",
     )
     parser.add_argument(
         "--quiet", "-q",
@@ -114,7 +139,7 @@ Examples:
     )
     parser.add_argument(
         "--agent",
-        help="Specific agent to run in 'agent' mode (e.g., architect, developer)",
+        help="Specific agent to run in 'agent' mode (e.g., Architect, BackendDev) — case-insensitive",
     )
     parser.add_argument(
         "--task",
@@ -187,6 +212,13 @@ def main():
     orchestrator = Orchestrator(config, verbose=verbose, project_path=args.project_path)
 
     if args.mode == "planner":
+        # Resolve and sanitize output path before starting the run
+        try:
+            output_path = _safe_output_path(args.output) if args.output else default_output_path(project)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
+
         with suppressor:
             print("\n" + "═" * 60)
             print("RUNNING PLANNER DEBATE")
@@ -203,7 +235,7 @@ def main():
                                 mode=args.mode, message=str(e))
                 raise
 
-            output_path = args.output or default_output_path(project)
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
             report_md = build_markdown_report(result)
             with open(output_path, "w") as f:
                 f.write(report_md)
@@ -230,8 +262,8 @@ def main():
             print(f"CONTINUING PROJECT: {project}")
             print("═" * 60)
             try:
-                orchestrator.run_agent(agent_name="planner", task_name="write_spec_file", project_description=project)
-                orchestrator.run_agent(agent_name="planner", task_name="write_tasks_file", project_description=project)
+                orchestrator.run_agent(agent_name="Planner", task_name="write_spec_file", project_description=project)
+                orchestrator.run_agent(agent_name="Planner", task_name="write_tasks_file", project_description=project)
             except Exception as e:
                 print(f"\nFatal error during continue: {e}", file=sys.stderr)
                 if args.headless:

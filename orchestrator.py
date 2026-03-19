@@ -7,12 +7,20 @@ import re
 import sys
 import threading
 import time
-import uuid
+import uuid, shutil
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Optional
 from agents import Agent, build_agents, build_planner
+from backends.session_store import SessionStore
 from context_store import ContextStore
 from validator import validate_response
+from exceptions import (
+    BinaryNotFoundError,
+    PipelineError,
+    ValidationError,
+    ReviewError,
+    MASError,
+)
 
 # ─── Console helpers ──────────────────────────────────────────────────────────
 
@@ -69,12 +77,21 @@ def print_status(msg: str):
     print(color(f"  → {msg}", "gray"))
 
 
+# ─── Snapshot key sets per pipeline stage ─────────────────────────────────────
+
+_SNAPSHOT_KEYS_ROUND1 = ["project_description"]
+_SNAPSHOT_KEYS_ROUND2 = ["round1_compressed", "project_description", "errors"]
+_SNAPSHOT_KEYS_SYNTHESIS = ["proposals", "challenges", "round1_compressed", "errors"]
+
+
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 class Orchestrator:
     """Manages the multi-agent debate and produces a final recommendation."""
 
     MAX_RETRY_ATTEMPTS = 3
+
+    _SKILLS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
 
     def __init__(
         self,
@@ -88,38 +105,98 @@ class Orchestrator:
         self.project_path = project_path
         self.skip_review = skip_review
         self.backend_config = config.get("backends", {})
+        # Validate CLI binaries at init — fail fast with typed error
+        for backend, cfg in self.backend_config.items():
+            cmd = cfg.get("command", "claude")
+            if not shutil.which(cmd) and not os.path.isfile(cmd):
+                raise BinaryNotFoundError(f"Backend binary not found: {cmd!r}")
+
         self.debate_config = config.get("debate", {})
         self.max_rounds = self.debate_config.get("max_rounds", 2)
         self.min_agents = self.debate_config.get("min_agents", 3)
         self.max_agents = self.debate_config.get("max_agents", 5)
 
-        self.planner = build_planner(config, project_path=project_path)
-        self.all_agents = build_agents(config, project_path=project_path)
-        self.all_agents['planner'] = self.planner
+        self.spec_content = ""
+        if self.project_path:
+            spec_path = os.path.join(self.project_path, "spec.md")
+            with open(spec_path, "r") as f:
+                self.spec_content = f"\n\n## Current spec.md\n{f.read()}"
 
-        # Shared context/memory store — thread-safe, grows as the debate progresses
+        self.session_store = SessionStore()
+        self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        self.planner = build_planner(config, project_path=project_path, session_store=self.session_store)
+        self.all_agents = build_agents(config, project_path=project_path, session_store=self.session_store)
+        self.all_agents['Planner'] = self.planner
+
+        self.agent_skills: dict[str, str] = self._load_skills()
         self.context = ContextStore()
-
-        # Lock for thread-safe log/console writes
         self._log_lock = threading.Lock()
 
-        # Session tracking
-        self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.session_log: dict = {
             "session_id": self.session_id,
             "start_time": datetime.datetime.utcnow().isoformat() + "Z",
             "entries": [],
         }
 
+        # Phase 8.2: Warn operator if the previous session log was interrupted
+        self._check_last_session_integrity()
+
+    # ─── Session integrity check ───────────────────────────────────────────────
+
+    def _check_last_session_integrity(self) -> None:
+        """
+        Scan logs/ for the most recent session-*.json and warn if it lacks
+        an 'end_time', which indicates the previous session was interrupted
+        (crash, SIGKILL, unhandled exception before _write_session_log ran).
+        """
+        import glob
+        log_pattern = os.path.join("logs", "session-*.json")
+        matches = sorted(glob.glob(log_pattern))  # lexicographic = chronological (timestamp prefix)
+        if not matches:
+            return
+        last_log_path = matches[-1]
+        try:
+            with open(last_log_path, "r") as f:
+                last_log = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return  # Unreadable log — not our problem to surface here
+
+        if "end_time" not in last_log:
+            sid = last_log.get("session_id", last_log_path)
+            print(
+                color(
+                    f"⚠ WARNING: Previous session '{sid}' has no end_time — "
+                    f"it may have been interrupted. Check {last_log_path} for details.",
+                    "yellow",
+                )
+            )
+
+    # ─── Skills loading ───────────────────────────────────────────────────────
+
+    def _load_skills(self) -> dict[str, str]:
+        skills: dict[str, str] = {}
+        for agent in self.all_agents.values():
+            skill_path = os.path.join(self._SKILLS_DIR, agent.name, "SKILL.md")
+            if os.path.isfile(skill_path):
+                with open(skill_path, "r") as f:
+                    skills[agent.name] = f.read()
+            else:
+                skills[agent.name] = ""
+        return skills
+
+    def _build_system_prompt(self, agent_name: str, base_prompt: str) -> str:
+        skill_content = self.agent_skills.get(agent_name, "")
+        if not skill_content.strip():
+            return base_prompt
+        return f"{base_prompt}\n\n## Your Specialized Skills\n{skill_content}"
+
     # ─── Logging helpers ──────────────────────────────────────────────────────
 
     def _append_session_entry(self, entry: dict):
-        """Thread-safe append to the in-memory session log entries."""
         with self._log_lock:
             self.session_log["entries"].append(entry)
 
     def _write_session_log(self):
-        """Flush the full session log to logs/session-{id}.json."""
         os.makedirs("logs", exist_ok=True)
         path = f"logs/session-{self.session_id}.json"
         self.session_log["end_time"] = datetime.datetime.utcnow().isoformat() + "Z"
@@ -127,8 +204,18 @@ class Orchestrator:
             json.dump(self.session_log, f, indent=2)
         print_status(f"Session log written → {path}")
 
-    def _log_cli_call(self, agent_name: str, model: str, status: str, duration_s: float, detail: str = ""):
-        """Append a structured JSON line to logs/cli_calls.log."""
+    def _log_cli_call(
+        self,
+        agent_name: str,
+        model: str,
+        status: str,
+        duration_s: float,
+        detail: str = "",
+        is_resumed: bool = False,
+        skills_injected: bool = False,
+        input_tokens: Optional[int] = None,
+        output_tokens: Optional[int] = None,
+    ):
         os.makedirs("logs", exist_ok=True)
         record = {
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
@@ -137,6 +224,10 @@ class Orchestrator:
             "model": model,
             "status": status,
             "duration_s": round(duration_s, 3),
+            "is_resumed": is_resumed,
+            "skills_injected": skills_injected,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
             "detail": detail,
         }
         with open("logs/cli_calls.log", "a") as f:
@@ -145,19 +236,12 @@ class Orchestrator:
     # ─── Pre-write artifact gate ───────────────────────────────────────────────
 
     def _review_artifact(self, artifact_response: str, original_request: str) -> tuple[bool, str]:
-        """
-        Invoke the code_reviewer agent to review a response containing <write_file> tags.
-
-        Returns (passed, feedback) where:
-          - passed=True  → reviewer returned PASS or WARN
-          - passed=False → reviewer returned FAIL, or reviewer errored
-        """
-        if "code_reviewer" not in self.all_agents:
+        if "CodeReviewer" not in self.all_agents:
             with self._log_lock:
                 print_status(color("⚠ code_reviewer agent not found — skipping artifact gate", "yellow"))
             return True, ""
 
-        reviewer = self.all_agents["code_reviewer"]
+        reviewer = self.all_agents["CodeReviewer"]
 
         review_request = (
             "You are reviewing a proposed file artifact before it is written to disk.\n\n"
@@ -184,7 +268,7 @@ class Orchestrator:
                 self.backend_config,
                 project_path=self.project_path,
             )
-        except RuntimeError as e:
+        except MASError as e:
             review_response = ""
             review_status = "error"
             review_detail = str(e)
@@ -193,7 +277,6 @@ class Orchestrator:
 
         duration = time.monotonic() - start
 
-        # Parse JSON verdict from reviewer response
         review_data: dict = {}
         if review_response:
             json_match = re.search(r'\{.*\}', review_response, re.DOTALL)
@@ -203,7 +286,6 @@ class Orchestrator:
                 except json.JSONDecodeError:
                     pass
 
-        # Reviewer errors are treated as FAIL — never silently allow bad artifacts through
         if review_status == "error":
             passed = False
             feedback = f"Reviewer error: {review_detail}"
@@ -218,7 +300,6 @@ class Orchestrator:
             else:
                 feedback = ""
 
-        # Determine log status label
         if review_status == "error":
             gate_status = "review_error"
         elif passed:
@@ -234,7 +315,6 @@ class Orchestrator:
             else:
                 print_status(color(f"  ✗ Code review FAILED: {feedback}", "red"))
 
-        # Record passed artifacts in the context store
         if passed:
             self.context.append("artifacts", {
                 "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
@@ -266,24 +346,39 @@ class Orchestrator:
 
     # ─── Core agent call ──────────────────────────────────────────────────────
 
-    def _call_agent(self, key: str, request: str, ctx: dict) -> tuple[str, str, str, bool]:
+    def _call_agent(
+        self,
+        key: str,
+        request: str,
+        ctx: dict,
+        snapshot_keys: Optional[list[str]] = None,
+    ) -> tuple[str, str, str, bool]:
         """
         Call a single agent with retry-with-feedback (up to MAX_RETRY_ATTEMPTS).
-        On validation failure, errors are appended to the prompt for the next attempt.
-        If the validated response contains <write_file> tags and skip_review is False,
-        the code_reviewer agent gates the artifact; on FAIL the feedback is fed back
-        to the original agent for another attempt (counted against MAX_RETRY_ATTEMPTS).
-        Records timing, appends a session entry, and logs the CLI call.
+
         Returns (agent_key, agent_name, response, success).
         success=False when status is 'error' or 'validation_failed'.
         """
         agent = self.all_agents[key]
 
-        with self._log_lock:
-            print_status(f"Calling {agent.name} ({agent.backend}/{agent.model})...")
+        # Phase 8.3: Determine skills state before prompt mutation for real-time reporting
+        skills_injected = bool(self.agent_skills.get(agent.name, "").strip())
 
-        # Enrich context with a snapshot of prior outputs so agents can reference them
-        ctx["context_store"] = self.context.snapshot()
+        with self._log_lock:
+            skills_label = color("Skills injected: True", "green") if skills_injected else color("Skills injected: False", "gray")
+            print_status(f"Calling {agent.name} ({agent.backend}/{agent.model}) | {skills_label}")
+
+        original_system_prompt = agent.system_prompt
+        if skills_injected:
+            agent.system_prompt = self._build_system_prompt(agent.name, original_system_prompt)
+            os.makedirs("logs/prompts", exist_ok=True)
+            prompt_log_path = (
+                f"logs/prompts/{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{agent.name}.txt"
+            )
+            with open(prompt_log_path, "w") as f:
+                f.write(agent.system_prompt)
+
+        ctx["context_store"] = self.context.snapshot(keys=snapshot_keys)
 
         start = time.monotonic()
         status = "success"
@@ -292,94 +387,94 @@ class Orchestrator:
         retry_count = 0
         current_request = request
 
-        for attempt in range(1, self.MAX_RETRY_ATTEMPTS + 1):
-            try:
-                response = agent.respond(current_request, ctx, self.backend_config, project_path=self.project_path)
-            except RuntimeError as e:
-                status = "error"
-                error_detail = str(e)
-                response = f"**Error:** {e}"
-                with self._log_lock:
-                    print(color(f"  ✗ {e}", "red"))
-                # Record error in the context store
-                self.context.append("errors", {
-                    "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
-                    "agent": agent.name,
-                    "agent_key": key,
-                    "round": ctx.get("round", ""),
-                    "error": error_detail,
-                })
-                break
-
-            validation = validate_response(agent.name, current_request, response)
-            if not validation["valid"]:
-                # Validation failed — log and prepare retry prompt
-                retry_count = attempt
-                validation_errors = validation.get("errors", [])
-                suggestions = validation.get("suggestions", "")
-
-                with self._log_lock:
-                    print_status(
-                        color(
-                            f"  ⚠ {agent.name} validation failed (attempt {attempt}/{self.MAX_RETRY_ATTEMPTS}): "
-                            + "; ".join(validation_errors),
-                            "gray",
-                        )
-                    )
-
-                if attempt < self.MAX_RETRY_ATTEMPTS:
-                    feedback_block = (
-                        "\n\n---\n"
-                        "**Your previous response did not pass validation. Please correct the following issues:**\n"
-                        + "\n".join(f"- {err}" for err in validation_errors)
-                    )
-                    if suggestions:
-                        feedback_block += f"\n\n**Suggestions:** {suggestions}"
-                    current_request = request + feedback_block
-                else:
-                    status = "validation_failed"
-                    error_detail = "; ".join(validation_errors)
+        try:
+            for attempt in range(1, self.MAX_RETRY_ATTEMPTS + 1):
+                try:
+                    response = agent.respond(current_request, ctx, self.backend_config, project_path=self.project_path)
+                except MASError as e:
+                    status = "error"
+                    error_detail = str(e)
+                    response = f"**Error:** {e}"
+                    with self._log_lock:
+                        print(color(f"  ✗ {e}", "red"))
                     self.context.append("errors", {
                         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                         "agent": agent.name,
                         "agent_key": key,
                         "round": ctx.get("round", ""),
-                        "error": f"validation_failed: {error_detail}",
+                        "error": error_detail,
                     })
-                continue
+                    break
 
-            # Validation passed — check for <write_file> artifacts
-            if not self.skip_review and re.search(r"<write_file\b", response, re.IGNORECASE):
-                review_passed, review_feedback = self._review_artifact(response, current_request)
-                if not review_passed:
+                validation = validate_response(agent.name, current_request, response)
+                if not validation["valid"]:
                     retry_count = attempt
+                    validation_errors = validation.get("errors", [])
+                    suggestions = validation.get("suggestions", "")
+
+                    with self._log_lock:
+                        print_status(
+                            color(
+                                f"  ⚠ {agent.name} validation failed (attempt {attempt}/{self.MAX_RETRY_ATTEMPTS}): "
+                                + "; ".join(validation_errors),
+                                "gray",
+                            )
+                        )
+
                     if attempt < self.MAX_RETRY_ATTEMPTS:
                         feedback_block = (
                             "\n\n---\n"
-                            "**Your previous response was rejected by the code reviewer. "
-                            "Please revise the artifact to address the following issues:**\n"
-                            f"- {review_feedback}"
+                            "**Your previous response did not pass validation. Please correct the following issues:**\n"
+                            + "\n".join(f"- {err}" for err in validation_errors)
                         )
+                        if suggestions:
+                            feedback_block += f"\n\n**Suggestions:** {suggestions}"
                         current_request = request + feedback_block
-                        continue
                     else:
-                        # Exhausted retries on review failure
-                        status = "review_failed"
-                        error_detail = review_feedback
+                        status = "validation_failed"
+                        error_detail = "; ".join(validation_errors)
                         self.context.append("errors", {
                             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
                             "agent": agent.name,
                             "agent_key": key,
                             "round": ctx.get("round", ""),
-                            "error": f"review_failed: {error_detail}",
+                            "error": f"validation_failed: {error_detail}",
                         })
-                        break
+                    continue
 
-            # Passed both validation and (if applicable) code review
-            break
+                if not self.skip_review and re.search(r"<write_file\b", response, re.IGNORECASE):
+                    review_passed, review_feedback = self._review_artifact(response, current_request)
+                    if not review_passed:
+                        retry_count = attempt
+                        if attempt < self.MAX_RETRY_ATTEMPTS:
+                            feedback_block = (
+                                "\n\n---\n"
+                                "**Your previous response was rejected by the code reviewer. "
+                                "Please revise the artifact to address the following issues:**\n"
+                                f"- {review_feedback}"
+                            )
+                            current_request = request + feedback_block
+                            continue
+                        else:
+                            status = "review_failed"
+                            error_detail = review_feedback
+                            self.context.append("errors", {
+                                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                                "agent": agent.name,
+                                "agent_key": key,
+                                "round": ctx.get("round", ""),
+                                "error": f"review_failed: {error_detail}",
+                            })
+                            break
+
+                break
+
+        finally:
+            agent.system_prompt = original_system_prompt
 
         duration = time.monotonic() - start
 
+        last_result = getattr(agent, "last_call_result", None)
         entry = {
             "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
             "agent": agent.name,
@@ -390,6 +485,10 @@ class Orchestrator:
             "status": status,
             "duration_s": round(duration, 3),
             "retry_count": retry_count,
+            "skills_injected": skills_injected,
+            "is_resumed": last_result.is_resumed if last_result else False,
+            "input_tokens": last_result.input_tokens if last_result else None,
+            "output_tokens": last_result.output_tokens if last_result else None,
         }
         if error_detail:
             entry["error"] = error_detail
@@ -401,22 +500,81 @@ class Orchestrator:
             status=status,
             duration_s=duration,
             detail=error_detail or response[:120].replace("\n", " "),
+            is_resumed=last_result.is_resumed if last_result else False,
+            skills_injected=skills_injected,
+            input_tokens=last_result.input_tokens if last_result else None,
+            output_tokens=last_result.output_tokens if last_result else None,
         )
 
         success = status == "success"
         return key, agent.name, response, success
 
+    # ─── Compression gate ─────────────────────────────────────────────────────
+
+    def _compress_proposals(self, proposals: dict[str, str]) -> str:
+        TRUNCATION_LIMIT = 500
+        summaries: dict[str, str] = {}
+        stats = {"extracted": 0, "resummarized": 0, "truncated": 0}
+
+        for agent_name, response in proposals.items():
+            match = re.search(
+                r"##\s+Summary\s*\n(.*?)(?=\n##\s|\Z)",
+                response,
+                re.DOTALL | re.IGNORECASE,
+            )
+            if match:
+                summaries[agent_name] = match.group(1).strip()
+                stats["extracted"] += 1
+                continue
+
+            try:
+                resummary = self.planner.respond(
+                    (
+                        f"Summarize the following agent proposal in 3–5 concise bullet points. "
+                        f"Preserve all concrete recommendations and note any conflicts.\n\n"
+                        f"{response[:3000]}"
+                    ),
+                    {"round": "compression", "agent": agent_name},
+                    self.backend_config,
+                )
+                summaries[agent_name] = resummary.strip()
+                stats["resummarized"] += 1
+            except MASError:
+                summaries[agent_name] = response[:TRUNCATION_LIMIT]
+                stats["truncated"] += 1
+
+        compressed = "\n\n".join(
+            f"### {agent_name}\n{summary}" for agent_name, summary in summaries.items()
+        )
+        self.context.set("round1_compressed", compressed)
+
+        with self._log_lock:
+            print_status(
+                f"Compression gate: {stats['extracted']} self-extracted, "
+                f"{stats['resummarized']} re-summarized, {stats['truncated']} truncated"
+            )
+
+        self._append_session_entry({
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "event": "compression_gate",
+            "agents_compressed": len(proposals),
+            "extracted": stats["extracted"],
+            "resummarized": stats["resummarized"],
+            "truncated": stats["truncated"],
+        })
+
+        return compressed
+
     # ─── Agent selection ──────────────────────────────────────────────────────
 
     def _select_agents(self, project_description: str) -> list[str]:
-        """Ask the Planner to select relevant agents for this project."""
         print_status("Planner is selecting relevant agents...")
 
         selection_request = (
             f"Analyze this project and select the 3-5 most relevant specialist agents.\n\n"
             f"Project: {project_description}\n\n"
-            f"Available agents: researcher, architect, backend_dev, frontend_dev, devops, security, skeptic\n\n"
-            f"Output ONLY a JSON object: {{\"selected_agents\": [\"agent1\", \"agent2\", ...]}}"
+            f"Available agents: Researcher, Architect, BackendDev, FrontendDev, DevOps, Security, Skeptic\n\n"
+            f"Output ONLY a JSON object: {{\"selected_agents\": [\"Agent1\", \"Agent2\", ...]}}"
         )
 
         self.context.set("project_description", project_description)
@@ -428,19 +586,16 @@ class Orchestrator:
             self.backend_config,
         )
 
-        # Parse JSON from response (handle markdown code blocks)
         selected = self._parse_agent_selection(response)
 
-        # Validate and clamp
         valid = [a for a in selected if a in self.all_agents]
         if not valid:
             print_status("Could not parse agent selection, using defaults.")
-            valid = ["researcher", "architect", "backend_dev", "devops"]
+            valid = ["Researcher", "Architect", "BackendDev", "DevOps"]
 
         valid = valid[: self.max_agents]
         if len(valid) < self.min_agents:
-            # Add missing defaults
-            for fallback in ["researcher", "architect", "backend_dev"]:
+            for fallback in ["Researcher", "Architect", "BackendDev"]:
                 if fallback not in valid:
                     valid.append(fallback)
                 if len(valid) >= self.min_agents:
@@ -450,8 +605,6 @@ class Orchestrator:
         return valid
 
     def _parse_agent_selection(self, response: str) -> list[str]:
-        """Extract the selected_agents list from a potentially messy LLM response."""
-        # Try to find JSON block
         json_match = re.search(r'\{[^{}]*"selected_agents"[^{}]*\}', response, re.DOTALL)
         if json_match:
             try:
@@ -460,9 +613,9 @@ class Orchestrator:
             except json.JSONDecodeError:
                 pass
 
-        # Fallback: look for a list of known agent names in the text
-        known = ["researcher", "architect", "backend_dev", "frontend_dev", "devops", "security", "skeptic"]
-        found = [a for a in known if a in response.lower()]
+        known = ["Researcher", "Architect", "BackendDev", "FrontendDev", "DevOps", "Security", "Skeptic"]
+        response_lower = response.lower()
+        found = [a for a in known if a.lower() in response_lower]
         return found
 
     # ─── Debate rounds ────────────────────────────────────────────────────────
@@ -475,9 +628,7 @@ class Orchestrator:
         is_challenge_round: bool = False,
     ) -> dict[str, str]:
         """
-        Run one debate round: each agent responds in parallel via ThreadPoolExecutor.
-        Failed agents (error or exhausted validation retries) are filtered from the
-        returned proposals. Raises RuntimeError if more than 50% of agents fail.
+        Run one debate round in parallel. Raises PipelineError if >50% of agents fail.
         """
         round_label = f"Round {round_num}" + (" — Challenge" if is_challenge_round else " — Proposals")
         print_header(round_label)
@@ -491,6 +642,8 @@ class Orchestrator:
             else "Analyze this project from your specialist perspective and provide your recommendations."
         )
 
+        snapshot_keys = _SNAPSHOT_KEYS_ROUND2 if is_challenge_round else _SNAPSHOT_KEYS_ROUND1
+
         def call_agent_task(key: str) -> tuple[str, str, str, bool]:
             ctx = {
                 "project_description": project_description,
@@ -499,9 +652,8 @@ class Orchestrator:
             if is_challenge_round and self.context.get("round1_proposals"):
                 ctx["previous_proposals"] = self.context["round1_proposals"]
                 ctx["challenge_target"] = True
-            return self._call_agent(key, request, ctx)
+            return self._call_agent(key, request, ctx, snapshot_keys=snapshot_keys)
 
-        # Fan out all agent calls in parallel
         with ThreadPoolExecutor(max_workers=len(selected_agent_keys)) as executor:
             future_to_key = {executor.submit(call_agent_task, key): key for key in selected_agent_keys}
 
@@ -510,8 +662,6 @@ class Orchestrator:
                 key, agent_name, response, success = future.result()
                 results[key] = (agent_name, response, success)
 
-        # Print results in original agent order for deterministic output
-        # and separate successes from failures
         for key in selected_agent_keys:
             agent_name, response, success = results[key]
             with self._log_lock:
@@ -524,7 +674,6 @@ class Orchestrator:
 
             if success:
                 proposals[agent_name] = response
-                # Store in the appropriate typed bucket
                 bucket = "challenges" if is_challenge_round else "proposals"
                 self.context.append(bucket, {
                     "round": round_num,
@@ -537,15 +686,13 @@ class Orchestrator:
                 with self._log_lock:
                     print_status(color(f"⚠ {agent_name} excluded from proposals (failed after all retries)", "red"))
 
-        # Abort if majority of agents failed
         total = len(selected_agent_keys)
         if len(failed_agents) > total / 2:
-            raise RuntimeError(
+            raise PipelineError(
                 f"{round_label}: {len(failed_agents)}/{total} agents failed (>{50}% threshold). "
                 f"Aborting pipeline. Failed: {', '.join(failed_agents)}"
             )
 
-        # Persist failed agents in context so _synthesize can reference them
         context_key = f"round{round_num}_failed_agents"
         self.context.set(context_key, failed_agents)
         if failed_agents:
@@ -559,7 +706,6 @@ class Orchestrator:
         round1: dict[str, str],
         round2: dict[str, str],
     ) -> str:
-        """Ask the Planner to synthesize all proposals into a final recommendation."""
         print_header("Planner Synthesis")
         print_agent_header("Planner", "Synthesis")
         print_status("Synthesizing all proposals...")
@@ -568,7 +714,6 @@ class Orchestrator:
         combined_proposals.update({f"[R1] {k}": v for k, v in round1.items()})
         combined_proposals.update({f"[R2] {k}": v for k, v in round2.items()})
 
-        # Build a failure notice for the prompt if any agents failed
         failure_notice = ""
         all_failed: list[str] = []
         for round_key in ("round1_failed_agents", "round2_failed_agents"):
@@ -607,12 +752,12 @@ class Orchestrator:
                     "project_description": project_description,
                     "round": "synthesis",
                     "previous_proposals": combined_proposals,
-                    "context_store": self.context.snapshot(),
+                    "context_store": self.context.snapshot(keys=_SNAPSHOT_KEYS_SYNTHESIS),
                 },
                 self.backend_config,
                 project_path=self.project_path,
             )
-        except RuntimeError as e:
+        except MASError as e:
             synthesis = f"**Synthesis failed:** {e}"
             status = "error"
             error_detail = str(e)
@@ -646,29 +791,23 @@ class Orchestrator:
     # ─── Public entry points ──────────────────────────────────────────────────
 
     def run_planner_debate(self, project_description: str) -> dict:
-        """
-        Execute the full debate flow and return a result dict with:
-          - selected_agents: list of agent keys used
-          - round1: dict of agent proposals
-          - round2: dict of challenge responses
-          - synthesis: final Planner recommendation
-        """
         print_header("Multi-Agent Project Advisor")
         print(color(f"Project: {project_description}\n", "bold"))
 
-        # Step 1: Planner selects agents
-        selected = self._select_agents(project_description)
+        spec_content = self.spec_content
+        enriched_description = project_description + spec_content
 
-        # Step 2: Round 1 — Initial proposals
-        round1 = self._run_round(selected, project_description, round_num=1, is_challenge_round=False)
+        selected = self._select_agents(enriched_description)
+
+        round1 = self._run_round(selected, enriched_description, round_num=1, is_challenge_round=False)
         self.context.set("round1_proposals", round1)
 
-        # Step 3: Round 2 — Challenge/support round
-        round2 = self._run_round(selected, project_description, round_num=2, is_challenge_round=True)
+        self._compress_proposals(round1)
+
+        round2 = self._run_round(selected, enriched_description, round_num=2, is_challenge_round=True)
         self.context.set("round2_proposals", round2)
 
-        # Step 4: Planner synthesizes
-        synthesis = self._synthesize(project_description, round1, round2)
+        synthesis = self._synthesize(enriched_description, round1, round2)
 
         result = {
             "project_description": project_description,
@@ -679,20 +818,21 @@ class Orchestrator:
         }
 
         self._write_session_log()
+        self.session_store.invalidate(self.project_path)
         return result
 
     def run_agent(self, agent_name: str, task_name: str, project_description: str):
-        """Run a specific agent for a specific task (e.g., Architect updates tasks.md)."""
+        # Normalize to PascalCase for user convenience (e.g. "backenddev" → "BackendDev")
+        if agent_name not in self.all_agents:
+            name_lower = agent_name.lower()
+            match = next((k for k in self.all_agents if k.lower() == name_lower), None)
+            if match:
+                agent_name = match
         if agent_name not in self.all_agents:
             print(f"Error: Agent '{agent_name}' not found.", file=sys.stderr)
             sys.exit(1)
 
-        spec_content = ""
-        if self.project_path:
-            spec_path = os.path.join(self.project_path, "spec.md")
-            if os.path.exists(spec_path):
-                with open(spec_path, "r") as f:
-                    spec_content = f"\n\n## Current spec.md\n{f.read()}"
+        spec_content = self.spec_content
 
         agent = self.all_agents[agent_name]
         print_agent_header(agent.name, f"Task: {task_name}")
@@ -705,7 +845,7 @@ class Orchestrator:
             "round": f"task:{task_name}",
         }
 
-        _, _, response, _ = self._call_agent(agent_name, task_name, ctx)
+        _, _, response, _ = self._call_agent(agent_name, task_name, ctx, snapshot_keys=None)
         if response.startswith("**Error:**"):
             print(color(f"  ✗ Error during agent {agent_name} task '{task_name}'", "red"))
             self._write_session_log()
@@ -714,5 +854,5 @@ class Orchestrator:
         print_response(response)
         self._write_session_log()
 
-    def run(self, project_description: str) -> dict:  # Placeholder to ensure proper method calls
+    def run(self, project_description: str) -> dict:
         raise NotImplementedError("Use run_planner_debate or run_agent methods instead.")

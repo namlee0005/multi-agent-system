@@ -9,10 +9,8 @@ logs/
 *.json
 
 # Generated reports and research
-report_*.md
 research.md
 research_recommendations.md
-tasks.md
 health_check.py
 random.html
 FILENAME
@@ -27,3 +25,4 @@ realtime-chat-app/
 
 # Environment
 .env
+.mas/
