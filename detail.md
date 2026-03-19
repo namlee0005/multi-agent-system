@@ -130,6 +130,7 @@ class Agent:
 | `devops` | Infrastructure | 0.7 | CI/CD, cost, scaling |
 | `security` | Threat modeling | 0.6 | Conservative by design |
 | `skeptic` | Devil's advocate | 0.9 | Surfaces hidden assumptions |
+| `tester` | Runtime & edge case testing | 0.4 | Generates runnable test scripts |
 | `code_reviewer` | Artifact gate | 0.3 | JSON output: PASS/WARN/FAIL |
 
 **`respond()` call path:**

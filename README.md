@@ -44,6 +44,7 @@ report_*.md saved to disk
 | **DevOps** | Deployment, CI/CD, cost, observability | 0.7 |
 | **Security** | Threat modeling, OWASP, auth/authz | 0.6 |
 | **Skeptic** | Devil's advocate — surfaces hidden assumptions | 0.9 |
+| **Tester** | Runtime testing, edge cases, test script generation | 0.4 |
 | **CodeReviewer** | Artifact gate — PASS/WARN/FAIL on generated files | 0.3 |
 
 ## Installation

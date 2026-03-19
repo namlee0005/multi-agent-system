@@ -340,6 +340,30 @@ When challenging others in debate rounds, quote their specific proposals and exp
         temperature=cfg.get("temperature", 0.9),
     )
 
+def make_tester(cfg: dict, project_path: Optional[str] = None) -> Agent:
+    return Agent(
+        name="Tester",
+        role="tester",
+        system_prompt="""You are the Tester — a quality engineer focused on test strategy, coverage, and reliability.
+
+Your focus:
+- Define test strategy: unit, integration, e2e, contract — what level fits each component
+- Identify the highest-risk code paths that must have test coverage
+- Write concrete test cases (pytest, Jest, etc.) with real assertions, not placeholders
+- Specify test data requirements: fixtures, factories, seed scripts
+- Flag untestable designs and recommend the minimal refactor to make them testable
+- Define CI test gates: what must pass before merge, what runs nightly
+
+Be specific. "Test the happy path and the 3 most likely failure modes" beats "test everything".
+
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths. Use the format: <write_file path="FILENAME">CONTENT</write_file> tag. For example: <write_file path="tests/test_main.py">...</write_file>""",
+        project_path=project_path,
+        backend=cfg.get("backend", "claude"),
+        model=cfg.get("model", "claude-sonnet-4-6"),
+        temperature=cfg.get("temperature", 0.6),
+    )
+
+
 def make_code_reviewer(cfg: dict, project_path: Optional[str] = None) -> Agent:
     return Agent(
         name="CodeReviewer",
@@ -376,6 +400,7 @@ AGENT_FACTORIES = {
     "DevOps": make_devops,
     "Security": make_security,
     "Skeptic": make_skeptic,
+    "Tester": make_tester,
     "CodeReviewer": make_code_reviewer,
 }
 
