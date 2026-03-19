@@ -170,7 +170,9 @@ When synthesizing, produce a comprehensive markdown document with:
         When given the task "write_tasks_file", you must take the final synthesized plan from the context and extract the 'Implementation Phases' section. Format this as a single markdown file and wrap it in a <write_file path="tasks.md">...</write_file> tag.
 
         When instructed to write content to a file, use the format: <write_file path="FILENAME">CONTENT</write_file>
-For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>""",
+For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>
+
+IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths.""",
         project_path=project_path,
         backend=cfg.get("backend", "claude"),
         model=cfg.get("model", "claude-sonnet-4-6"),
