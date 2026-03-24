@@ -45,6 +45,7 @@ report_*.md saved to disk
 | **Security** | Threat modeling, OWASP, auth/authz | 0.6 |
 | **Skeptic** | Devil's advocate — surfaces hidden assumptions | 0.9 |
 | **Tester** | Runtime testing, edge cases, test script generation | 0.4 |
+| **VisualArtist** | Stable Diffusion prompt engineering (subject, style, lighting, camera) | 0.85 |
 | **CodeReviewer** | Artifact gate — PASS/WARN/FAIL on generated files | 0.3 |
 
 ## Installation

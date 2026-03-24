@@ -39,6 +39,10 @@ agents:
     backend: claude
     model: claude-sonnet-4-6
     temperature: 0.6
+  VisualArtist:
+    backend: claude
+    model: claude-sonnet-4-6
+    temperature: 0.85
 backends:
   claude:
     args:

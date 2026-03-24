@@ -131,6 +131,7 @@ class Agent:
 | `security` | Threat modeling | 0.6 | Conservative by design |
 | `skeptic` | Devil's advocate | 0.9 | Surfaces hidden assumptions |
 | `tester` | Runtime & edge case testing | 0.4 | Generates runnable test scripts |
+| `visual_artist` | SD prompt engineering | 0.85 | Six-layer prompts: subject, style, lighting, camera, quality, negative |
 | `code_reviewer` | Artifact gate | 0.3 | JSON output: PASS/WARN/FAIL |
 
 **`respond()` call path:**

@@ -85,7 +85,8 @@ Respond in clear, structured markdown. Be specific, opinionated, and concise (30
 
         # Logging logic
         timestamp = datetime.datetime.now().isoformat()
-        log_file_path = "logs/cli_calls.log"
+        log_dir = os.path.join(self.project_path, "logs") if self.project_path else "logs"
+        log_file_path = os.path.join(log_dir, "cli_calls.log")
         os.makedirs(os.path.dirname(log_file_path), exist_ok=True)
         
         log_entry = f"--- TIMESTAMP: {timestamp} ---\n"
@@ -340,6 +341,45 @@ When challenging others in debate rounds, quote their specific proposals and exp
         temperature=cfg.get("temperature", 0.9),
     )
 
+def make_visual_artist(cfg: dict, project_path: Optional[str] = None) -> Agent:
+    return Agent(
+        name="VisualArtist",
+        role="visual_artist",
+        system_prompt="""You are the VisualArtist — a professional prompt engineer specializing in Stable Diffusion and generative image models.
+
+Your role is to transform simple concept descriptions into complete, production-quality Stable Diffusion prompts. You understand how SD models interpret token weight, attention syntax, and prompt structure.
+
+For every prompt you produce, you MUST include all six layers:
+
+1. SUBJECT — The core subject with detail: not "a woman" but "a young woman with auburn hair, sharp cheekbones, wearing a tailored charcoal coat"
+2. STYLE — Artistic movement, medium, or reference: "digital painting, concept art, in the style of Craig Mullins, ArtStation trending"
+3. LIGHTING — Specific lighting setup: "golden hour rim light, soft diffused fill, volumetric fog, cinematic chiaroscuro"
+4. CAMERA — Lens and composition: "shot on Sony A7IV, 85mm f/1.4, shallow depth of field, rule of thirds, slight low angle"
+5. QUALITY BOOSTERS — Proven quality tokens: "masterpiece, best quality, highly detailed, 8k resolution, RAW photo"
+6. NEGATIVE PROMPT — What to exclude: "ugly, deformed, blurry, low quality, watermark, text, extra limbs, bad anatomy, oversaturated"
+
+Output format for every request:
+
+**Positive Prompt:**
+[full comma-separated prompt]
+
+**Negative Prompt:**
+[full negative prompt]
+
+**Suggested Parameters:**
+- Sampler: [e.g. DPM++ 2M Karras]
+- Steps: [e.g. 30]
+- CFG Scale: [e.g. 7]
+- Aspect Ratio: [e.g. 16:9 / 512x768]
+
+When writing to files, use write_file tags with paths relative to the project root.
+Be opinionated. A weak prompt produces a weak image. Specificity is quality.""",
+        project_path=project_path,
+        backend=cfg.get("backend", "claude"),
+        model=cfg.get("model", "claude-sonnet-4-6"),
+        temperature=cfg.get("temperature", 0.85),
+    )
+
 def make_tester(cfg: dict, project_path: Optional[str] = None) -> Agent:
     return Agent(
         name="Tester",
@@ -400,6 +440,7 @@ AGENT_FACTORIES = {
     "DevOps": make_devops,
     "Security": make_security,
     "Skeptic": make_skeptic,
+    "VisualArtist": make_visual_artist,
     "Tester": make_tester,
     "CodeReviewer": make_code_reviewer,
 }
