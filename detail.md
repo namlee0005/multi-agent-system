@@ -707,6 +707,50 @@ cli_timeout_s: 120             # per subprocess.run() call
 
 ---
 
+## 7. Functional Skills Tool Catalogue (Phase 9–11)
+
+Agents emit `[TOOL_CALL: tool_name | {"arg": "value"}]` markers. The Orchestrator
+intercepts, executes the tool locally, and resumes the CLI session with
+`[TOOL_RESULT: {...}]`. Max 5 tool cycles per agent call (`MAX_TOOL_CYCLES=5`).
+
+### 7.1 Tool Registry (`skills/registry.yaml`)
+
+| Tool | Module | Allowed Agents | Description |
+|------|--------|---------------|-------------|
+| `read_file` | `skills/functional/tools.py` | all | Read project file, returns content + truncation flag |
+| `list_dir` | `skills/functional/tools.py` | all | List directory entries (non-recursive) |
+| `run_python` | `skills/functional/tools.py` | BackendDev, Tester | Execute Python snippet in subprocess |
+| `web_search` | `mas/tools/web.py` | Researcher, Architect, BackendDev | Tavily primary / DuckDuckGo fallback |
+| `web_fetch` | `mas/tools/web.py` | Researcher, Architect, BackendDev, FrontendDev | Fetch URL → Markdown via html2text |
+| `run_bash` | `mas/tools/sandbox.py` | BackendDev, DevOps, Tester, Researcher | Allowlisted shell: grep/find/ls/cat/wc/head/tail/git |
+| `write_file` | `mas/tools/filesystem.py` | BackendDev, FrontendDev, DevOps, Architect | Atomic file write with path traversal guard |
+| `str_replace` | `mas/tools/filesystem.py` | BackendDev, FrontendDev, DevOps, Architect | In-place single-occurrence string replacement |
+| `comfyui_submit` | `mas/tools/comfyui.py` | VisualArtist, BackendDev | POST workflow to ComfyUI /prompt, returns prompt_id |
+| `comfyui_poll` | `mas/tools/comfyui.py` | VisualArtist, BackendDev | GET /history/{id}, returns status + output image URLs |
+
+### 7.2 Tool Security Contracts
+
+**Path tools (`read_file`, `list_dir`, `write_file`, `str_replace`):**
+- `os.path.realpath()` called on resolved path
+- Assert `candidate.startswith(project_path + os.sep)` — traversal raises `PermissionError`
+- `write_file` and `str_replace` use atomic write: `NamedTemporaryFile` → `os.replace()`
+
+**Sandbox (`run_bash`):**
+- `shlex.split()` extracts executable token; `os.path.basename()` strips path prefix
+- Token checked against `ALLOWED_COMMANDS = {grep, find, ls, cat, wc, head, tail, git}`
+- `shell=False` always; output capped at 4096 chars
+
+**Web tools (`web_fetch`, `web_search`):**
+- `web_search`: `TAVILY_API_KEY` env var enables Tavily; falls back to DuckDuckGo Instant Answer
+- `web_fetch`: html2text strips scripts/styles; truncated at `max_chars` (default 8000)
+
+**ComfyUI tools:**
+- `COMFYUI_HOST` env var (default `http://127.0.0.1:8188`)
+- `comfyui_poll` returns immediately — `status: "pending" | "running" | "complete" | "error"`
+- Caller responsible for poll loop; tool interceptor enforces `MAX_TOOL_CYCLES=5`
+
+---
+
 ## Appendix: Phase Completion Status
 
 | Phase | Feature | Status |
@@ -728,3 +772,9 @@ cli_timeout_s: 120             # per subprocess.run() call
 | 8.2 | Session log integrity check | ✓ |
 | 8.3 | Skill injection observability | ✓ |
 | 8.4 | Regression test suite | ✓ |
+| 9 | Functional Skills + interception-resume pattern | ✓ |
+| 10 | DAG engine + three-layer WorkflowState | ✓ |
+| 11.1 | `mas/tools/web.py` (web_fetch + web_search) | ✓ |
+| 11.2 | `mas/tools/sandbox.py` (run_bash allowlist) | ✓ |
+| 11.3 | `mas/tools/filesystem.py` (write_file + str_replace) | ✓ |
+| 11.4 | `mas/tools/comfyui.py` (submit + poll) | ✓ |

@@ -21,20 +21,18 @@
 - [x] **8.4 — Regression test suite:** Full end-to-end flow test covering all core components.
 - [x] **8.5 — Path Standardization & Root Cleanup:** Enforced `reports/` directory for all outputs and cleaned MAS root.
 - [x] **8.6 — Project Creation & Pathing Logic Fix:** Updated `create_project.sh` and agent prompts to ensure clean, relative project structures.
-- [x] **9.1 — FunctionalSkill & ToolParam models:** `skills/functional/models.py` — Pydantic v2 contracts for tools, calls, and results.
-- [x] **9.2 — skills/registry.yaml:** Initial registry with `web_search`, `read_file`, `list_dir`, `run_python`.
-- [x] **9.3 — SkillRegistry class:** `skills/functional/registry.py` — loads yaml, filters by agent, generates schema blocks.
-- [x] **9.4 — ToolInterceptor:** `skills/functional/interceptor.py` — parses `[TOOL_CALL: name | {args}]` markers.
-- [x] **9.5 — read_file & list_dir tools:** `skills/functional/tools.py` — realpath + prefix guard on all file access.
-- [x] **9.6 — run_python tool:** `skills/functional/tools.py` — subprocess with timeout, no shell=True.
-- [x] **9.7 — CLISession interception loop:** `backends/cli_session.py` — intercept, execute, resume cycle (max 5 rounds).
-- [x] **10.1 — WorkflowState three-layer model:** `workflow/state.py` — conversation / task / world layers.
-- [x] **10.2 — WorkflowGraph DAG engine:** `workflow/graph.py` — topological execution with handler dispatch.
-- [x] **10.3 — ConsensusEvaluator:** `workflow/consensus.py` — Jaccard keyword overlap for early-exit gating.
-- [x] **10.4 — RecoveryRouter:** `workflow/recovery.py` — classifies errors, applies retry/reassign/escalate decisions.
-- [x] **11.1 — mas/tools/web.py:** `web_fetch` (httpx + html2text → Markdown) and `web_search` (Tavily primary / DuckDuckGo fallback).
-- [x] **11.2 — mas/tools/sandbox.py:** `run_bash` with strict allowlist: grep, find, ls, cat, wc, head, tail, git. No shell=True.
-- [x] **11.3 — skills/registry.yaml updated:** `web_fetch` and `run_bash` registered; `web_search` delegated to mas.tools.web.
+
+---
+
+## Backlog
+
+### Phase 6.5 — Gemini Session Pinning (Future, conditional)
+
+If stateless Gemini calls prove insufficient, implement explicit session index tracking via `--list-sessions` parsing. Map Gemini UUID to index.
+
+### Phase 6.6 — Parallelism Recovery (Future, conditional)
+
+If session locks cause measurable serialization overhead, implement `SessionPool` with N=3 pre-warmed sessions per agent.
 
 ---
 

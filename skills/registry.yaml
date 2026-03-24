@@ -1,0 +1,143 @@
+tools:
+  - name: web_search
+    description: Search the web and return a list of result snippets.
+    allowed_agents: [Researcher, Architect, BackendDev]
+    timeout_s: 30
+    params:
+      - name: query
+        type: string
+        description: The search query string.
+        required: true
+      - name: max_results
+        type: integer
+        description: Maximum number of results to return.
+        required: false
+        default: 5
+
+  - name: read_file
+    description: Read a file from the project directory and return its contents.
+    allowed_agents: []
+    timeout_s: 10
+    params:
+      - name: path
+        type: string
+        description: Path relative to the project root.
+        required: true
+      - name: max_bytes
+        type: integer
+        description: Maximum bytes to read (default 32768).
+        required: false
+        default: 32768
+
+  - name: list_dir
+    description: List files and directories at the given project-relative path.
+    allowed_agents: []
+    timeout_s: 10
+    params:
+      - name: path
+        type: string
+        description: Directory path relative to the project root.
+        required: true
+
+  - name: run_python
+    description: Execute a short Python snippet and return stdout/stderr.
+    allowed_agents: [BackendDev, Tester]
+    timeout_s: 60
+    params:
+      - name: code
+        type: string
+        description: Python source code to execute.
+        required: true
+
+  - name: web_fetch
+    description: Fetch a URL and return its content converted to Markdown.
+    allowed_agents: [Researcher, Architect, BackendDev, FrontendDev]
+    timeout_s: 30
+    params:
+      - name: url
+        type: string
+        description: The URL to fetch.
+        required: true
+      - name: max_chars
+        type: integer
+        description: Maximum characters to return (default 8000).
+        required: false
+        default: 8000
+
+  - name: run_bash
+    description: >
+      Execute a restricted shell command from the allowlist:
+      grep, find, ls, cat, wc, head, tail, git.
+    allowed_agents: [BackendDev, DevOps, Tester, Researcher]
+    timeout_s: 30
+    params:
+      - name: command
+        type: string
+        description: Shell command string. First token must be in the allowlist.
+        required: true
+      - name: cwd
+        type: string
+        description: Working directory for the command (default is project root).
+        required: false
+
+  - name: write_file
+    description: >
+      Write content to a project-relative file path. Creates parent directories
+      automatically. Write is atomic (temp file + rename). Refuses path traversal.
+    allowed_agents: [BackendDev, FrontendDev, DevOps, Architect]
+    timeout_s: 10
+    params:
+      - name: path
+        type: string
+        description: Project-relative file path (e.g. "src/main.py").
+        required: true
+      - name: content
+        type: string
+        description: Full UTF-8 file content to write.
+        required: true
+
+  - name: str_replace
+    description: >
+      Replace exactly one occurrence of old_str with new_str in a file.
+      Fails if old_str appears 0 or more than once (ambiguous).
+    allowed_agents: [BackendDev, FrontendDev, DevOps, Architect]
+    timeout_s: 10
+    params:
+      - name: path
+        type: string
+        description: Project-relative file path.
+        required: true
+      - name: old_str
+        type: string
+        description: Exact string to find. Must appear exactly once in the file.
+        required: true
+      - name: new_str
+        type: string
+        description: Replacement string.
+        required: true
+
+  - name: comfyui_submit
+    description: >
+      Submit a ComfyUI workflow JSON to the local ComfyUI server and return
+      the prompt_id for subsequent polling. Uses COMFYUI_HOST env var
+      (default http://127.0.0.1:8188).
+    allowed_agents: [VisualArtist, BackendDev]
+    timeout_s: 30
+    params:
+      - name: workflow
+        type: object
+        description: ComfyUI workflow dict (exported from the UI as API JSON).
+        required: true
+
+  - name: comfyui_poll
+    description: >
+      Poll ComfyUI for the status and output images of a submitted prompt.
+      Returns immediately — caller must poll on an interval until status is
+      "complete" or "error". Max 5 poll cycles enforced by the tool loop.
+    allowed_agents: [VisualArtist, BackendDev]
+    timeout_s: 10
+    params:
+      - name: prompt_id
+        type: string
+        description: The prompt_id returned by comfyui_submit.
+        required: true

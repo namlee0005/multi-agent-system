@@ -1,0 +1,1 @@
+"""Functional Skills — executable tool protocol for MAS agents."""
