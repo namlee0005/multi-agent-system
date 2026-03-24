@@ -41,7 +41,7 @@ report_*.md saved to disk
 | **Architect** | System design, data models, service boundaries | 0.7 |
 | **BackendDev** | Language/framework/database selection | 0.8 |
 | **FrontendDev** | UI framework, accessibility, bundle strategy | 0.8 |
-| **DevOps** | Deployment, CI/CD, cost, observability | 0.7 |
+| **DevOps** | Git workflow, CI/CD pipelines, secrets hygiene, deployment automation | 0.7 |
 | **Security** | Threat modeling, OWASP, auth/authz | 0.6 |
 | **Skeptic** | Devil's advocate — surfaces hidden assumptions | 0.9 |
 | **Tester** | Runtime testing, edge cases, test script generation | 0.4 |

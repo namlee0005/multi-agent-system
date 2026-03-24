@@ -36,6 +36,12 @@
 - [x] **11.2 — mas/tools/sandbox.py:** `run_bash` with strict allowlist: grep, find, ls, cat, wc, head, tail, git. No shell=True.
 - [x] **11.3 — skills/registry.yaml updated:** `web_fetch` and `run_bash` registered; `web_search` delegated to mas.tools.web.
 
+- [x] **Phase 3.5 — Cyber-Neon Roguelike: Final Polish & Balancing:**
+  - Reviewed `src/` for bugs (stubs only; no game logic existed).
+  - Wrote `scripts/balance-test.py` — 1000-run Monte Carlo simulation with floor/enemy death analysis and CI-ready balance gate.
+  - Wrote `src/entities/enemy.ts` — typed enemy roster + spawn tables validated by simulation.
+  - Balance result: **22.4% win rate** (target 15–25%, seed=42). Enforcer attack 12→8, Boss attack 18→10, drop rates raised across all tiers.
+
 ---
 
 ## Invariants (Do Not Regress)
