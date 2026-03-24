@@ -123,7 +123,7 @@ class Orchestrator:
                 self.spec_content = f"\n\n## Current spec.md\n{f.read()}"
 
         self.session_store = SessionStore()
-        self.session_id = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
+        self.session_id = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S") + "-" + uuid.uuid4().hex[:6]
         self.planner = build_planner(config, project_path=project_path, session_store=self.session_store)
         self.all_agents = build_agents(config, project_path=project_path, session_store=self.session_store)
         self.all_agents['Planner'] = self.planner
@@ -134,7 +134,7 @@ class Orchestrator:
 
         self.session_log: dict = {
             "session_id": self.session_id,
-            "start_time": datetime.datetime.utcnow().isoformat() + "Z",
+            "start_time": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "entries": [],
         }
 
@@ -197,9 +197,10 @@ class Orchestrator:
             self.session_log["entries"].append(entry)
 
     def _write_session_log(self):
-        os.makedirs("logs", exist_ok=True)
-        path = f"logs/session-{self.session_id}.json"
-        self.session_log["end_time"] = datetime.datetime.utcnow().isoformat() + "Z"
+        log_dir = os.path.join(self.project_path, "logs") if self.project_path else "logs"
+        os.makedirs(log_dir, exist_ok=True)
+        path = os.path.join(log_dir, f"session-{self.session_id}.json")
+        self.session_log["end_time"] = datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z"
         with open(path, "w") as f:
             json.dump(self.session_log, f, indent=2)
         print_status(f"Session log written → {path}")
@@ -216,9 +217,10 @@ class Orchestrator:
         input_tokens: Optional[int] = None,
         output_tokens: Optional[int] = None,
     ):
-        os.makedirs("logs", exist_ok=True)
+        log_dir = os.path.join(self.project_path, "logs") if self.project_path else "logs"
+        os.makedirs(log_dir, exist_ok=True)
         record = {
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "session_id": self.session_id,
             "agent": agent_name,
             "model": model,
@@ -230,7 +232,7 @@ class Orchestrator:
             "output_tokens": output_tokens,
             "detail": detail,
         }
-        with open("logs/cli_calls.log", "a") as f:
+        with open(os.path.join(log_dir, "cli_calls.log"), "a") as f:
             f.write(json.dumps(record) + "\n")
 
     # ─── Pre-write artifact gate ───────────────────────────────────────────────
@@ -317,13 +319,13 @@ class Orchestrator:
 
         if passed:
             self.context.append("artifacts", {
-                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
                 "content": artifact_response,
                 "original_request": original_request[:200],
             })
 
         self._append_session_entry({
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "agent": reviewer.name,
             "agent_key": "code_reviewer",
             "backend": reviewer.backend,
@@ -373,7 +375,7 @@ class Orchestrator:
             agent.system_prompt = self._build_system_prompt(agent.name, original_system_prompt)
             os.makedirs("logs/prompts", exist_ok=True)
             prompt_log_path = (
-                f"logs/prompts/{datetime.datetime.utcnow().strftime('%Y%m%dT%H%M%S')}_{agent.name}.txt"
+                f"logs/prompts/{datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S')}_{agent.name}.txt"
             )
             with open(prompt_log_path, "w") as f:
                 f.write(agent.system_prompt)
@@ -398,7 +400,7 @@ class Orchestrator:
                     with self._log_lock:
                         print(color(f"  ✗ {e}", "red"))
                     self.context.append("errors", {
-                        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
                         "agent": agent.name,
                         "agent_key": key,
                         "round": ctx.get("round", ""),
@@ -434,7 +436,7 @@ class Orchestrator:
                         status = "validation_failed"
                         error_detail = "; ".join(validation_errors)
                         self.context.append("errors", {
-                            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
                             "agent": agent.name,
                             "agent_key": key,
                             "round": ctx.get("round", ""),
@@ -459,7 +461,7 @@ class Orchestrator:
                             status = "review_failed"
                             error_detail = review_feedback
                             self.context.append("errors", {
-                                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+                                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
                                 "agent": agent.name,
                                 "agent_key": key,
                                 "round": ctx.get("round", ""),
@@ -476,7 +478,7 @@ class Orchestrator:
 
         last_result = getattr(agent, "last_call_result", None)
         entry = {
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "agent": agent.name,
             "agent_key": key,
             "backend": agent.backend,
@@ -555,7 +557,7 @@ class Orchestrator:
             )
 
         self._append_session_entry({
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "event": "compression_gate",
             "agents_compressed": len(proposals),
             "extracted": stats["extracted"],
@@ -765,7 +767,7 @@ class Orchestrator:
 
         duration = time.monotonic() - start
         self._append_session_entry({
-            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat() + "Z",
             "agent": self.planner.name,
             "agent_key": "planner",
             "backend": self.planner.backend,

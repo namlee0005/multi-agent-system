@@ -35,11 +35,20 @@ def validate_response(agent_name: str, task: str, response: Any) -> dict:
     response_str = response if isinstance(response, str) else json.dumps(response)
 
     # Check 1: Non-empty, minimum length
+    # Bypass the length floor for valid JSON — a compact JSON object like
+    # {"selected_agents": ["Architect"]} is complete even if under 100 chars.
     stripped = response_str.strip()
+    _is_valid_json = False
+    try:
+        json.loads(stripped)
+        _is_valid_json = True
+    except (json.JSONDecodeError, ValueError):
+        pass
+
     if not stripped:
         errors.append("Response is empty.")
         suggestions_parts.append("Ensure the agent returns a non-empty response.")
-    elif len(stripped) < MIN_RESPONSE_LENGTH:
+    elif not _is_valid_json and len(stripped) < MIN_RESPONSE_LENGTH:
         errors.append(
             f"Response too short: {len(stripped)} chars (minimum {MIN_RESPONSE_LENGTH})."
         )

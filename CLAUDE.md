@@ -4,12 +4,18 @@ This file defines how agents operate within the `multi-agent-system` framework.
 
 ## Task Protocol
 
-Every implementation task MUST be detailed before it is handed off to a Developer agent.
+The full Ben Protocol is defined in `SOUL.md`. The canonical pipeline is:
+
+```
+DETAIL → TEST-SPEC → IMPLEMENT → REVIEW → TEST-VALIDATE → DONE
+```
 
 1.  **Detailing:** The Architect MUST provide function signatures, data structures (Pydantic/TypeScript), and explicit file paths.
-2.  **Implementation:** Developer agents MUST use `<write_file path="PATH">CONTENT</write_file>` tags to ensure code is written to disk.
-3.  **Self-Correction:** Agents have a maximum of 3 retry attempts to fix validation or code review failures.
-4.  **Review:** All generated code artifacts are subject to a mandatory `CodeReviewer` agent check unless `--skip-review` is specified.
+2.  **Test Spec:** The Tester generates executable test scripts against the Architect's spec BEFORE implementation begins.
+3.  **Implementation:** Developer agents MUST use `<write_file path="PATH">CONTENT</write_file>` tags to ensure code is written to disk.
+4.  **Self-Correction:** Agents have a maximum of 3 retry attempts to fix validation or code review failures.
+5.  **Review:** All generated code artifacts are subject to a mandatory `CodeReviewer` agent check unless `--skip-review` is specified.
+6.  **Test Validate:** The Tester reviews the implementation against the test spec. Test execution is required only if `--require-tests` is set.
 
 ## Code Standards
 
