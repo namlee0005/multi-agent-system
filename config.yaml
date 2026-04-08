@@ -1,7 +1,7 @@
 agents:
   Architect:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.7
   BackendDev:
     backend: claude
@@ -9,39 +9,39 @@ agents:
     temperature: 0.8
   CodeReviewer:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.3
   DevOps:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.7
   FrontendDev:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.8
   Planner:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.5
   Researcher:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.7
   Security:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.6
   Skeptic:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.9
   Tester:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.6
   VisualArtist:
     backend: claude
-    model: claude-sonnet-4-6
+    model: claude-opus-4-6
     temperature: 0.85
 backends:
   claude:
@@ -49,6 +49,8 @@ backends:
     - --print
     - --permission-mode
     - bypassPermissions
+    - --output-format
+    - json
     command: /home/ben/.npm-global/bin/claude
     input_mode: stdin
   gemini:

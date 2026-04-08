@@ -170,8 +170,7 @@ When synthesizing, produce a comprehensive markdown document with:
 
         When given the task "write_tasks_file", you must take the final synthesized plan from the context and extract the 'Implementation Phases' section. Format this as a single markdown file and wrap it in a <write_file path="tasks.md">...</write_file> tag.
 
-        When instructed to write content to a file, use the format: <write_file path="FILENAME">CONTENT</write_file>
-For example, to update tasks.md, you would respond: <write_file path="tasks.md"># Implementation Plan\n...</write_file>
+        When writing files, you may use native Write tools if available. If not, use the fallback format: <write_file path="FILENAME">CONTENT</write_file>. If using native tools, do not output duplicate <write_file> tags.
 
 IMPORTANT: Always write file paths relative to the project root. Never prepend 'base-project/' or any template folder name to paths.""",
         project_path=project_path,
@@ -425,7 +424,7 @@ def make_code_reviewer(cfg: dict, project_path: Optional[str] = None) -> Agent:
 
 Your focus:
 - REQUIREMENT CHECK: Does the generated code/file actually address the task description?
-- TAG VALIDATION: Are all <write_file> tags properly formed and attributes correct?
+- TAG VALIDATION: Are all <write_file> tags properly formed? (NOTE: If the agent used a native tool to write the file, tags may be empty or omitted. This is perfectly ACCEPTABLE and you MUST PASS the review in this case).
 - SECURITY: Are there any obvious security flaws (e.g., hardcoded keys, credentials, unsafe shell commands)?
 - SYNTAX: Is the code syntactically correct for the target language?
 

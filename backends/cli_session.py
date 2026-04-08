@@ -68,6 +68,7 @@ class CLISession:
                 text=True,
                 timeout=self.timeout,
                 env=self._get_env(),
+                cwd=self.project_path,
             )
         except Exception as e:
             return CLICallResult(
